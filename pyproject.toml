@@ -1,0 +1,24 @@
+[project]
+name = "english-speakers-bot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Léo LABARBE", email = "labarbe.leo2308@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "discord-py>=2.7.1",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "playwright>=1.63.0",
+    "python-dotenv>=1.2.3",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+english-speakers-bot = "english_speakers_bot:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

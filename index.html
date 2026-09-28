@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot Web Controller</title>
+    <style>
+        :root {
+            --bg-color: #313338;
+            --card-bg: #2b2d31;
+            --input-bg: #1e1f22;
+            --text-color: #f2f5f7;
+            --accent-color: #5865f2;
+            --accent-hover: #4752c4;
+            --border-color: #3f4147;
+            --success-color: #23a55a;
+            --error-color: #f23f43;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            background-color: var(--card-bg);
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 480px;
+        }
+
+        h2 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #ffffff;
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 10px;
+            background-color: var(--input-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        .tab-btn.active {
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 0.9em;
+            color: #b5bac1;
+        }
+
+        input[type="text"], input[type="password"], textarea {
+            width: 100%;
+            padding: 10px;
+            background-color: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-color);
+            box-sizing: border-box;
+            font-size: 1em;
+            font-family: inherit;
+        }
+
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        textarea {
+            resize: vertical;
+            height: 80px;
+        }
+
+        button.send-btn {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        button.send-btn:hover {
+            background-color: var(--accent-hover);
+        }
+
+        button.send-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        #status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            display: none;
+            word-break: break-word;
+        }
+
+        #status.success {
+            display: block;
+            background-color: rgba(35, 165, 90, 0.15);
+            border: 1px solid var(--success-color);
+            color: #23a55a;
+        }
+
+        #status.error {
+            display: block;
+            background-color: rgba(242, 63, 67, 0.15);
+            border: 1px solid var(--error-color);
+            color: #f23f43;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Discord Bot Controller</h2>
+
+        <div class="form-group">
+            <label for="apiUrl">FastAPI Server URL:</label>
+            <input type="text" id="apiUrl" value="http://127.0.0.1:8000" placeholder="http://YOUR_BOT_IP:8000">
+        </div>
+
+        <div class="form-group">
+            <label for="apiKey">API Key (only if you set API_KEY in .env):</label>
+            <input type="password" id="apiKey" placeholder="Leave empty if not used" autocomplete="off">
+        </div>
+
+        <div class="tab-buttons">
+            <button class="tab-btn active" data-tab="dm" onclick="switchTab('dm')">Send DM</button>
+            <button class="tab-btn" data-tab="channel" onclick="switchTab('channel')">Send to Channel</button>
+            <button class="tab-btn" data-tab="embed" onclick="switchTab('embed')">Send Embed</button>
+        </div>
+
+        <!-- DM Form -->
+        <div id="dmTab" class="tab-content active">
+            <div class="form-group">
+                <label for="targetUser">Target Username or User ID:</label>
+                <input type="text" id="targetUser" placeholder="e.g. username or 123456789012345678">
+            </div>
+            <div class="form-group">
+                <label for="dmMessage">Message:</label>
+                <textarea id="dmMessage" placeholder="Type your direct message here..."></textarea>
+            </div>
+            <button class="send-btn" onclick="sendDM(this)">Send DM</button>
+        </div>
+
+        <!-- Channel Form -->
+        <div id="channelTab" class="tab-content">
+            <div class="form-group">
+                <label for="channelId">Discord Channel ID:</label>
+                <input type="text" id="channelId" placeholder="e.g. 123456789012345678">
+            </div>
+            <div class="form-group">
+                <label for="channelMessage">Message:</label>
+                <textarea id="channelMessage" placeholder="Type your channel message here..."></textarea>
+            </div>
+            <button class="send-btn" onclick="sendChannelMessage(this)">Send to Channel</button>
+        </div>
+
+        <!-- Embed Form -->
+        <div id="embedTab" class="tab-content">
+            <div class="form-group">
+                <label for="channelIdEmbed">Discord Channel ID:</label>
+                <input type="text" id="channelIdEmbed" placeholder="e.g. 123456789012345678">
+            </div>
+            <div class="form-group">
+                <label for="channelMessageEmbed">Embed Message:</label>
+                <textarea id="channelMessageEmbed" placeholder="Type your embed message here..."></textarea>
+            </div>
+            <button class="send-btn" onclick="triggerEmbed(this)">Send Embed</button>
+        </div>
+
+        <div id="status"></div>
+    </div>
+
+    <script>
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(btn =>
+                btn.classList.toggle('active', btn.dataset.tab === tabName));
+            document.querySelectorAll('.tab-content').forEach(content =>
+                content.classList.toggle('active', content.id === tabName + 'Tab'));
+            hideStatus();
+        }
+
+        function showStatus(text, isError = false) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = text;
+            statusDiv.className = isError ? 'error' : 'success';
+        }
+
+        function hideStatus() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = '';
+            statusDiv.textContent = '';
+        }
+
+        // FastAPI returns `detail` as a string for HTTPException
+        // but as an array of objects for validation errors (422).
+        function formatDetail(detail) {
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                return detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+            }
+            return JSON.stringify(detail);
+        }
+
+        async function postJson(path, body, button) {
+            const baseUrl = document.getElementById('apiUrl').value.trim().replace(/\/$/, '');
+            const apiKey = document.getElementById('apiKey').value.trim();
+
+            const headers = { 'Content-Type': 'application/json' };
+            if (apiKey) headers['X-API-Key'] = apiKey;
+
+            if (button) button.disabled = true;
+            try {
+                const response = await fetch(`${baseUrl}${path}`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(body)
+                });
+
+                let data = {};
+                try { data = await response.json(); } catch (_) { /* non-JSON response */ }
+
+                return { ok: response.ok, status: response.status, data };
+            } catch (err) {
+                return { ok: false, status: 0, networkError: err.message };
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        function handleResult(result, successText) {
+            if (result.networkError) {
+                showStatus(`Network Error: ${result.networkError}. Make sure your FastAPI backend is running.`, true);
+            } else if (result.ok) {
+                showStatus(successText(result.data));
+            } else {
+                showStatus(`Error (${result.status}): ${formatDetail(result.data.detail)}`, true);
+            }
+        }
+
+        async function sendDM(btn) {
+            const target = document.getElementById('targetUser').value.trim();
+            const message = document.getElementById('dmMessage').value.trim();
+
+            if (!target || !message) {
+                showStatus('Please fill in both target user and message fields.', true);
+                return;
+            }
+
+            const result = await postJson('/send-dm', { target, message }, btn);
+            handleResult(result, data => `Success! DM sent to ${data.recipient}`);
+        }
+
+        async function sendChannelMessage(btn) {
+            const channel_id = document.getElementById('channelId').value.trim();
+            const message = document.getElementById('channelMessage').value.trim();
+
+            if (!channel_id || !message) {
+                showStatus('Please fill in both Channel ID and message fields.', true);
+                return;
+            }
+
+            const result = await postJson('/trigger-command', { channel_id, message }, btn);
+            handleResult(result, () => 'Success! Message sent to channel.');
+        }
+
+        async function triggerEmbed(btn) {
+            const channel_id = document.getElementById('channelIdEmbed').value.trim();
+            const message = document.getElementById('channelMessageEmbed').value.trim();
+
+            if (!channel_id || !message) {
+                showStatus('Please fill in both Channel ID and message fields.', true);
+                return;
+            }
+
+            const result = await postJson('/trigger-embed', { channel_id, message }, btn);
+            handleResult(result, () => 'Success! Embed sent to channel.');
+        }
+    </script>
+</body>
+</html>
