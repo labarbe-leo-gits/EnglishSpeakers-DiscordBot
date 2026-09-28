@@ -3,6 +3,7 @@ import os
 import asyncio
 import secrets
 from typing import Optional
+from contextlib import asynccontextmanager
 
 import discord
 import httpx
@@ -18,11 +19,9 @@ from playwright.async_api import async_playwright
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEY = os.getenv("API_KEY")
-API_URL = os.getenv("API_URL")  # bare script URL, e.g. https://example.com/api.php
+API_URL = os.getenv("API_URL")
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
-
-# Optional: set GUILD_ID in .env for instant slash-command sync while testing
 GUILD_ID = os.getenv("GUILD_ID")
 
 intents = discord.Intents.default()
@@ -30,60 +29,77 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-# Remove default help command to prevent registration collision
 bot.remove_command("help")
 
-app = FastAPI()
+# ---------- FastAPI Lifespan ----------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Starts the Discord bot in the background when Uvicorn starts FastAPI."""
+    if not TOKEN:
+        print("[CRITICAL] DISCORD_TOKEN is missing from environment variables!")
+    else:
+        # Run bot.start in an asynchronous background task on the same event loop
+        asyncio.create_task(bot.start(TOKEN))
+        print("[INFO] Discord bot background task started.")
+    yield
+    # Cleanup on application shutdown
+    if not bot.is_closed():
+        await bot.close()
+        print("[INFO] Discord bot shut down gracefully.")
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,  # must be False when allow_origins is "*"
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ---------- Health Check Route ----------
+
+@app.get("/")
+async def root_health_check():
+    """Satisfies Render's health check monitor to avoid 404 errors."""
+    return {
+        "status": "online",
+        "bot_ready": bot.is_ready(),
+        "bot_user": str(bot.user) if bot.user else None
+    }
 
 # ---------- Dependencies ----------
 
 async def require_api_key(x_api_key: Optional[str] = Header(default=None)):
-    """Only enforced if API_KEY is set in the environment."""
     if API_KEY:
         if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
             raise HTTPException(status_code=401, detail="Invalid or missing API key.")
-
 
 async def require_bot_ready():
     if not bot.is_ready():
         raise HTTPException(status_code=503, detail="Bot is not connected to Discord yet.")
 
-
 # ---------- Payloads ----------
 
 class DMPayload(BaseModel):
-    target: str  # User ID (recommended) or exact username
+    target: str
     message: str
-
 
 class ChannelPayload(BaseModel):
     channel_id: str
     message: str
 
-
 # ---------- Helpers ----------
 
 async def resolve_user(target: str):
     user = None
-
-    # 1. Try User ID first (numeric string)
     if target.isdigit():
         try:
             user = await bot.fetch_user(int(target))
         except discord.NotFound:
             pass
 
-    # 2. Otherwise search cached server members by username
     if not user:
         for guild in bot.guilds:
             member = guild.get_member_named(target)
@@ -94,25 +110,20 @@ async def resolve_user(target: str):
     if not user:
         raise HTTPException(
             status_code=404,
-            detail=f"User '{target}' not found. Make sure the bot shares a server with them or use their User ID.",
+            detail=f"User '{target}' not found.",
         )
     return user
 
-
 def insert_api_key_into_headers(headers: dict) -> dict:
-    """Adds the API key to the headers if it's set in the environment."""
     if API_KEY:
         headers["X-API-Key"] = API_KEY
     return headers
 
-
 async def api_login():
-    """Logs into the API using the provided email and password and returns the token."""
     if not EMAIL or not PASSWORD:
-        raise HTTPException(status_code=500, detail="API credentials are not set in the environment.")
+        raise HTTPException(status_code=500, detail="API credentials are not set.")
 
     headers = insert_api_key_into_headers({})
-
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         response = await client.post(
             API_URL,
@@ -122,24 +133,19 @@ async def api_login():
         )
 
     if response.status_code != 200:
-        print(f"[API login] {response.status_code} {response.url}\n{response.text[:500]}")
         raise HTTPException(status_code=500, detail="Failed to log into the API.")
 
     token = response.json().get("token")
     if not token:
-        raise HTTPException(status_code=500, detail="API login response did not contain a token.")
+        raise HTTPException(status_code=500, detail="API login did not return a token.")
     return token
 
-
-_token: Optional[str] = None  # cached login token
-
+_token: Optional[str] = None
 
 async def login_speaker_student_portal(unique_name: str, password: str) -> bool:
-    """Login as a student using unique_name ans password"""
     if not unique_name or not password:
-        raise HTTPException(status_code=400, detail="Unique name and password are required.")
+        raise HTTPException(status_code=400, detail="Credentials required.")
 
-    # Use the API to verify credentials instead of scraping the portal directly
     headers = insert_api_key_into_headers({})
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         response = await client.post(
@@ -150,37 +156,29 @@ async def login_speaker_student_portal(unique_name: str, password: str) -> bool:
         )
 
     if response.status_code != 200:
-        print(f"[API login] {response.status_code} {response.url}\n{response.text[:500]}")
-        raise HTTPException(status_code=500, detail="Failed to log into the API.")
+        raise HTTPException(status_code=500, detail="API login error.")
 
     token = response.json().get("token")
     if not token:
-        raise HTTPException(status_code=401, detail="Invalid unique name or password.")
+        raise HTTPException(status_code=401, detail="Invalid unique_name or password.")
 
-    return True  # Login successful
-
+    return True
 
 async def get_token(force_refresh: bool = False) -> str:
-    """Returns the cached API token, logging in first if needed."""
     global _token
     if force_refresh or not _token:
         _token = await api_login()
     return _token
 
-
 async def auth_headers(force_refresh: bool = False) -> dict:
-    """Builds headers with the optional X-API-Key and the Bearer token."""
     headers = insert_api_key_into_headers({})
     headers["Authorization"] = f"Bearer {await get_token(force_refresh)}"
     return headers
 
-
 async def fetch_speakers() -> list:
-    """Fetches all speakers. The API returns {"success": true, "speakers": [...]}."""
     response = None
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         for attempt in range(2):
-            # On the retry, force a fresh login in case the cached token expired
             headers = await auth_headers(force_refresh=(attempt == 1))
             response = await client.get(
                 API_URL, params={"resource": "speakers"}, headers=headers
@@ -189,11 +187,9 @@ async def fetch_speakers() -> list:
                 break
 
     if response.status_code != 200:
-        print(f"[API] {response.status_code} {response.url}\n{response.text[:500]}")
-        raise HTTPException(status_code=500, detail="Failed to fetch speakers from the API.")
+        raise HTTPException(status_code=500, detail="Failed to fetch speakers.")
 
     return response.json().get("speakers", [])
-
 
 async def resolve_channel(channel_id: str):
     if not channel_id.isdigit():
@@ -207,20 +203,16 @@ async def resolve_channel(channel_id: str):
         except discord.NotFound:
             raise HTTPException(status_code=404, detail="Channel not found.")
         except discord.Forbidden:
-            raise HTTPException(status_code=403, detail="Bot can't access that channel.")
+            raise HTTPException(status_code=403, detail="Bot cannot access channel.")
 
     if not hasattr(channel, "send"):
-        raise HTTPException(status_code=400, detail="That channel can't receive messages.")
+        raise HTTPException(status_code=400, detail="Channel cannot receive messages.")
     return channel
 
-
 async def generate_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
-    """Uses Playwright to POST member credentials and export the page as a PDF."""
-
-    # Verify the credentials from the modal before attempting to generate the PDF
     credentials_valid = await login_speaker_student_portal(unique_name, password)
     if not credentials_valid:
-        raise HTTPException(status_code=401, detail="Invalid unique name or password.")
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -230,7 +222,6 @@ async def generate_member_pdf(member_id: str, unique_name: str, password: str) -
         export_url = "https://hainu.fr/englishspeakers/public/export_member_pdf.php"
         await page.goto(export_url)
 
-        # Submit POST form with credentials and member_id
         await page.evaluate(f"""
             const form = document.createElement('form');
             form.method = 'POST';
@@ -258,7 +249,6 @@ async def generate_member_pdf(member_id: str, unique_name: str, password: str) -
         pdf_bytes = await page.pdf(format="A4", print_background=True)
         await browser.close()
         return pdf_bytes
-
 
 # ---------- Modals ----------
 
@@ -305,7 +295,6 @@ class PDFAuthModal(discord.ui.Modal, title="Export Member PDF"):
                 ephemeral=True
             )
 
-
 # ---------- Bot Commands ----------
 
 @bot.hybrid_command(
@@ -350,7 +339,6 @@ async def points(ctx: commands.Context):
 
     await ctx.send(embed=embed)
 
-
 @bot.hybrid_command(name="info", description="Get helpful links and portal resources.")
 async def info(ctx: commands.Context):
     links = [
@@ -374,7 +362,6 @@ async def info(ctx: commands.Context):
 
     await ctx.send(embed=embed)
 
-
 @bot.hybrid_command(name="help", description="Display all available bot commands.")
 async def help_command(ctx: commands.Context):
     embed = discord.Embed(
@@ -383,40 +370,13 @@ async def help_command(ctx: commands.Context):
         color=discord.Color.purple()
     )
     
-    embed.add_field(
-        name="`/points`",
-        value="Check your points balance linked to your Discord username.",
-        inline=False
-    )
-    embed.add_field(
-        name="`/info`",
-        value="View all official web pages, student portals, and community links.",
-        inline=False
-    )
-    embed.add_field(
-        name="`/pdf`",
-        value="Generates and exports your member report as a PDF document.",
-        inline=False
-    )
-    embed.add_field(
-        name="`/ping`",
-        value="Check the bot's current connection latency.",
-        inline=False
-    )
-    embed.add_field(
-        name="`/help`",
-        value="Display this help message with command info.",
-        inline=False
-    )
+    embed.add_field(name="`/points`", value="Check your points balance linked to your Discord username.", inline=False)
+    embed.add_field(name="`/info`", value="View all official web pages, student portals, and community links.", inline=False)
+    embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
+    embed.add_field(name="`/ping`", value="Check the bot's current connection latency.", inline=False)
+    embed.add_field(name="`/help`", value="Display this help message with command info.", inline=False)
 
     await ctx.send(embed=embed)
-
-"""
-@bot.hybrid_command(name="ping", description="Check the bot's latency.")
-async def ping(ctx: commands.Context):
-    latency_ms = round(bot.latency * 1000)
-    await ctx.send(f"Pong! 🏓 `{latency_ms} ms`")
-"""
 
 @bot.tree.command(name="pdf", description="Prompt for credentials and export your member PDF.")
 async def pdf_command(interaction: discord.Interaction):
@@ -446,7 +406,6 @@ async def pdf_command(interaction: discord.Interaction):
     speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
     await interaction.response.send_modal(PDFAuthModal(member_id=speaker_id))
 
-# /attendance command is not there yet, but we send a placeholder message for now
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
     await ctx.send(
@@ -459,7 +418,6 @@ async def attendance(ctx: commands.Context):
 @app.post("/send-dm", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
 async def send_dm(payload: DMPayload):
     user = await resolve_user(payload.target)
-
     try:
         dm_channel = user.dm_channel or await user.create_dm()
         await dm_channel.send(payload.message)
@@ -467,29 +425,25 @@ async def send_dm(payload: DMPayload):
     except discord.Forbidden:
         raise HTTPException(
             status_code=403,
-            detail="Cannot send DM to this user. Their DMs may be closed or they blocked the bot.",
+            detail="Cannot send DM to this user. DMs closed or bot blocked.",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/trigger-command", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
 async def trigger_command(payload: ChannelPayload):
     channel = await resolve_channel(payload.channel_id)
-
     try:
         await channel.send(payload.message)
         return {"status": "success"}
     except discord.Forbidden:
-        raise HTTPException(status_code=403, detail="Missing permission to send messages in that channel.")
+        raise HTTPException(status_code=403, detail="Missing permission in channel.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/trigger-embed", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
 async def trigger_embed(payload: ChannelPayload):
     channel = await resolve_channel(payload.channel_id)
-
     try:
         embed = discord.Embed(description=payload.message, color=discord.Color.blue())
         await channel.send(embed=embed)
@@ -497,17 +451,15 @@ async def trigger_embed(payload: ChannelPayload):
     except discord.Forbidden:
         raise HTTPException(
             status_code=403,
-            detail="Missing permission in that channel (needs Send Messages + Embed Links).",
+            detail="Missing permission in channel.",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ---------- Bot Events ----------
 
 @bot.event
 async def setup_hook():
-    """Runs once before the bot connects. Registers and syncs slash commands."""
     if GUILD_ID:
         guild = discord.Object(id=int(GUILD_ID))
         bot.tree.copy_global_to(guild=guild)
@@ -517,17 +469,11 @@ async def setup_hook():
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} global slash command(s).")
 
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-
-async def main():
-    config = uvicorn.Config(app=app, host="0.0.0.0", port=8000)
-    server = uvicorn.Server(config)
-    await asyncio.gather(bot.start(TOKEN), server.serve())
-
-
+# Local execution fallback
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
