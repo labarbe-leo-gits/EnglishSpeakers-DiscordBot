@@ -333,7 +333,7 @@ async def points(ctx: commands.Context):
     embed.add_field(name="Points", value=str(points_value), inline=False)
     embed.add_field(
         name="Login to the website",
-        value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements!",
+        value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
         inline=False,
     )
 
@@ -342,14 +342,16 @@ async def points(ctx: commands.Context):
 @bot.hybrid_command(name="info", description="Get helpful links and portal resources.")
 async def info(ctx: commands.Context):
     links = [
-        ("App Download", "https://hainu.fr/public/download.php"),
-        ("About Us", "https://hainu.fr/public/about.php"),
-        ("Events / Blog", "https://hainu.fr/public/blog.php"),
-        ("Points Leaderboard", "https://hainu.fr/public/points.php"),
-        ("Contact", "https://hainu.fr/public/contact.php"),
-        ("Student Login", "https://hainu.fr/student/login.php"),
+        ("App Download", "https://hainu.fr/englishspeakers/public/download.php"),
+        ("About Us", "https://hainu.fr/englishspeakers/public/about.php"),
+        ("Events / Blog", "https://hainu.fr/englishspeakers/public/blog.php"),
+        ("Points Leaderboard", "https://hainu.fr/englishspeakers/public/points.php"),
+        ("Contact", "https://hainu.fr/englishspeakers/public/contact.php"),
+        ("Student Login", "https://hainu.fr/englishspeakers/student/login.php"),
         ("MyGES (School Portal)", "https://myges.fr"),
-        ("Discord Community", "https://discord.gg/7MWxC8azvM")
+        ("Discord Community", "https://discord.gg/7MWxC8azvM"),
+        ("Term of Service", "https://hainu.fr/englishspeakers/legal/tos.php"),
+        ("Privacy Policy", "https://hainu.fr/englishspeakers/legal/privacy.php")
     ]
     
     linear_text = "\n".join([f"**{title}** : {url}" for title, url in links])
