@@ -373,7 +373,7 @@ async def help_command(ctx: commands.Context):
     embed.add_field(name="`/points`", value="Check your points balance linked to your Discord username.", inline=False)
     embed.add_field(name="`/info`", value="View all official web pages, student portals, and community links.", inline=False)
     embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
-    embed.add_field(name="`/ping`", value="Check the bot's current connection latency.", inline=False)
+    embed.add_field(name="`/attendance`", value="Check your attendance linked to your Discord username.", inline=False)
     embed.add_field(name="`/help`", value="Display this help message with command info.", inline=False)
 
     await ctx.send(embed=embed)
@@ -409,6 +409,9 @@ async def pdf_command(interaction: discord.Interaction):
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
     await ctx.defer(ephemeral=True)
+
+    # Add a loading message to inform the user that the bot is processing their request
+    await ctx.send("Fetching your attendance record, please wait...", ephemeral=True)
 
     user_name = ctx.author.name.lower()
     full_user = str(ctx.author).lower()
