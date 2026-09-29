@@ -408,11 +408,107 @@ async def pdf_command(interaction: discord.Interaction):
 
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
-    await ctx.send(
-        "The `/attendance` command is not implemented yet. Please check the website for your attendance record.",
-        ephemeral=True
-    )
+    await ctx.defer(ephemeral=True)
 
+    user_name = ctx.author.name.lower()
+    full_user = str(ctx.author).lower()
+
+    # 1. Récupération des speakers pour matcher l'utilisateur et obtenir son ID
+    try:
+        speakers = await fetch_speakers()
+    except Exception:
+        await ctx.send_followup(
+            "Unable to retrieve speaker records at this time. Please try again later.",
+            ephemeral=True
+        )
+        return
+
+    matched_speaker = None
+    for speaker in speakers:
+        api_username = (speaker.get("discord_username") or "").lower()
+        if api_username and api_username in (user_name, full_user):
+            matched_speaker = speaker
+            break
+
+    if not matched_speaker:
+        await ctx.send_followup(
+            "No speaker account is linked to your Discord username. Please ensure your Discord username is set in the portal.",
+            ephemeral=True
+        )
+        return
+
+    speaker_id = matched_speaker.get("id") or matched_speaker.get("member_id")
+    if not speaker_id:
+        await ctx.send_followup(
+            "Invalid speaker account data (missing ID).",
+            ephemeral=True
+        )
+        return
+
+    # 2. Requête vers l'API en ciblant uniquement par ID
+    headers = insert_api_key_into_headers({})
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            response = await client.get(
+                API_URL,
+                params={"resource": "speakers", "id": speaker_id},
+                headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        except (httpx.HTTPError, ValueError):
+            await ctx.send_followup(
+                "Unable to retrieve attendance details at this time. Please try again later.",
+                ephemeral=True
+            )
+            return
+
+    if not data.get("success") or not data.get("speaker"):
+        await ctx.send_followup(
+            "No attendance record found for this ID.",
+            ephemeral=True
+        )
+        return
+
+    speaker = data["speaker"]
+    attendance_list = speaker.get("attendance", [])
+
+    # 3. Construction de l'embed avec les résultats
+    embed = discord.Embed(
+        title=f"📊 Présences de {speaker.get('full_name', ctx.author.display_name)}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Classe", value=speaker.get("class", "N/A"), inline=True)
+    embed.add_field(name="Points", value=str(speaker.get("points", 0)), inline=True)
+
+    if not attendance_list:
+        embed.add_field(
+            name="Attendance Record",
+            value="No attendance records found.",
+            inline=False
+        )
+    else:
+        lines = []
+        for record in attendance_list:
+            if isinstance(record, dict):
+                date = record.get("date", "Unknown Date")
+                status = record.get("status", "Present")
+                session = record.get("session_name", "")
+                label = f"• **{date}** - {status}" + (f" ({session})" if session else "")
+                lines.append(label)
+            else:
+                lines.append(f"• **{record}**")
+
+        embed.add_field(
+            name=f"Attendance ({len(attendance_list)})",
+            value="\n".join(lines[:15]),
+            inline=False
+        )
+
+    embed.set_footer(text="English Speakers Association")
+    await ctx.send_followup(embed=embed, ephemeral=True)
+    
 # ---------- Endpoints ----------
 
 @app.post("/send-dm", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
