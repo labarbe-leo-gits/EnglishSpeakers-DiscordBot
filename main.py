@@ -357,7 +357,7 @@ async def info(ctx: commands.Context):
     embed = discord.Embed(
         title="Useful Links & Resources",
         description=linear_text,
-        color=discord.Color.green()
+        color=discord.Color.blue()
     )
 
     await ctx.send(embed=embed)
@@ -367,7 +367,7 @@ async def help_command(ctx: commands.Context):
     embed = discord.Embed(
         title="Bot Help & Commands",
         description="Here is a list of all available commands:",
-        color=discord.Color.purple()
+        color=discord.Color.blue()
     )
     
     embed.add_field(name="`/points`", value="Check your points balance linked to your Discord username.", inline=False)
