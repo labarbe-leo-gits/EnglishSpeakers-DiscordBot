@@ -484,7 +484,7 @@ async def attendance(ctx: commands.Context):
         lines = []
         for record in attendance_list:
             if isinstance(record, dict):
-                date = record.get("date", "Unknown Date")
+                date = record.get("session_date", "Unknown Date")
                 status = record.get("status", "Present")
                 session = record.get("session_name", "")
                 lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
