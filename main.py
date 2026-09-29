@@ -488,6 +488,14 @@ async def attendance(ctx: commands.Context):
         for record in attendance_list:
             if isinstance(record, dict):
                 date = record.get("session_date", "Unknown Date")
+
+                # Format the date as "DD/MM/YYYY"
+                try:
+                    from datetime import datetime
+                    parsed_date = datetime.strptime(date, "%Y-%m-%d")
+                    date = parsed_date.strftime("%d/%m/%Y")
+                except ValueError:
+                    pass  # Keep the original date if parsing fails
                 status = record.get("status", "Present")
                 session = record.get("session_name", "")
                 lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
