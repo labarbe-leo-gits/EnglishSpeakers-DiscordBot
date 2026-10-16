@@ -377,6 +377,8 @@ async def help_command(ctx: commands.Context):
     embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
     embed.add_field(name="`/attendance`", value="Check your attendance linked to your Discord username.", inline=False)
     embed.add_field(name="`/events`", value="Display the upcoming events from the website's event calendar.", inline=False)
+    embed.add_field(name="`/me`", value="Get all available information about your English Speakers account.", inline=False)
+    embed.add_field(name="`/rgpd`", value="Get information about your data privacy and rights under GDPR.", inline=False)
     embed.add_field(name="`/help`", value="Display this help message with command info.", inline=False)
 
     await ctx.send(embed=embed)
