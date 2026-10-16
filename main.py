@@ -546,8 +546,8 @@ async def events(ctx: commands.Context):
     )
 
     for event in events_list[:10]:  # Limit to first 10 events
-        name = event.get("name", "Unnamed Event")
-        date = event.get("date", "Unknown Date")
+        name = event.get("event_name", "Unnamed Event")
+        date = event.get("event_date", "Unknown Date")
         description = event.get("description", "No description available.")
         embed.add_field(name=f"{name} - {date}", value=description, inline=False)
 
