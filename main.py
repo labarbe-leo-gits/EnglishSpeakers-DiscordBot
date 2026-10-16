@@ -622,7 +622,7 @@ async def me(ctx: commands.Context):
     embed.add_field(name="Unique Name", value=matched_speaker.get("unique_name") or "N/A", inline=True)
     embed.add_field(name="Class", value=matched_speaker.get("class") or "N/A", inline=True)
     embed.add_field(name="Points", value=str(matched_speaker.get("points", 0)), inline=True)
-    embed.add_field(name="Discord Username", value=matched_speaker.get("discord_username") or "Not Linked", inline=False)
+    embed.add_field(name="Discord Username", value=matched_speaker.get("discord_username") or "Not Linked", inline=True)
     embed.add_field(
         name="Login to the website",
         value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
@@ -640,8 +640,9 @@ async def rgpd(ctx: commands.Context):
         description=(
             "We respect your privacy and comply with the General Data Protection Regulation (GDPR). "
             "You have the right to access, rectify, or request the deletion of your personal data. "
-            "Some data is necessary for account management and cannot be deleted if it affects your account functionality, except if you wish to delete your account entirely, meaning any points, attendance, and achievements will be permanently removed.\n\n"
+            "Some data is necessary for account management and cannot be deleted if it affects your account functionality, except if you wish to delete your account entirely, meaning any points, attendance, and achievements will be permanently removed.\n"
             "For more information, please visit our [Privacy Policy](https://hainu.fr/englishspeakers/legal/privacy.php) and [Terms of Service](https://hainu.fr/englishspeakers/legal/tos.php)."
+            "If you wish to see what data we have on you, you can use the `/me` command to view your account information."
         ),
         color=discord.Color.blue(),
     )
