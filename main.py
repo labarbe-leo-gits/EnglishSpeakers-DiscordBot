@@ -646,6 +646,8 @@ async def rgpd(ctx: commands.Context):
         color=discord.Color.blue(),
     )
 
+    await ctx.send(embed=embed, ephemeral=True)
+
 # ---------- Endpoints ----------
 
 @app.post("/send-dm", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
