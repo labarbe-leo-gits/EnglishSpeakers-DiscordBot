@@ -583,7 +583,69 @@ async def events(ctx: commands.Context):
 
     embed.set_footer(text="English Speakers Association")
     await ctx.send(embed=embed, ephemeral=True)
-    
+
+@bot.hybrid_command(name="me", description="Get all available information about your English Speakers account.")
+async def me(ctx: commands.Context):
+    await ctx.defer(ephemeral=True)
+
+    user_name = ctx.author.name.lower()
+    full_user = str(ctx.author).lower()
+
+    try:
+        speakers = await fetch_speakers()
+    except Exception as e:
+        await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
+        return
+
+    matched_speaker = None
+    for speaker in speakers:
+        api_username = (speaker.get("discord_username") or "").lower()
+        if api_username and api_username in (user_name, full_user):
+            matched_speaker = speaker
+            break
+
+    if not matched_speaker:
+        await ctx.send(
+            "No speaker account is linked to your Discord account.",
+            ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"Account Information for {matched_speaker.get('full_name', ctx.author.display_name)}",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Member ID", value=str(matched_speaker.get("id") or matched_speaker.get("member_id")), inline=True)
+    embed.add_field(name="First Name", value=matched_speaker.get("first_name", "N/A"), inline=True)
+    embed.add_field(name="Last Name", value=matched_speaker.get("last_name", "N/A"), inline=True)
+    embed.add_field(name="Full Name", value=matched_speaker.get("full_name") or "N/A", inline=True)
+    embed.add_field(name="Unique Name", value=matched_speaker.get("unique_name") or "N/A", inline=True)
+    embed.add_field(name="Class", value=matched_speaker.get("class") or "N/A", inline=True)
+    embed.add_field(name="Points", value=str(matched_speaker.get("points", 0)), inline=True)
+    embed.add_field(name="Discord Username", value=matched_speaker.get("discord_username") or "Not Linked", inline=False)
+    embed.add_field(
+        name="Login to the website",
+        value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
+        inline=False,
+    )
+
+    await ctx.send(embed=embed, ephemeral=True)    
+
+@bot.hybrid_command(name="rgpd", description="Get information about your data privacy and rights under GDPR.")
+async def rgpd(ctx: commands.Context):
+    await ctx.defer(ephemeral=True)
+
+    embed = discord.Embed(
+        title="Data Privacy & GDPR Information",
+        description=(
+            "We respect your privacy and comply with the General Data Protection Regulation (GDPR). "
+            "You have the right to access, rectify, or request the deletion of your personal data. "
+            "Some data is necessary for account management and cannot be deleted if it affects your account functionality, except if you wish to delete your account entirely, meaning any points, attendance, and achievements will be permanently removed.\n\n"
+            "For more information, please visit our [Privacy Policy](https://hainu.fr/englishspeakers/legal/privacy.php) and [Terms of Service](https://hainu.fr/englishspeakers/legal/tos.php)."
+        ),
+        color=discord.Color.blue(),
+    )
+
 # ---------- Endpoints ----------
 
 @app.post("/send-dm", dependencies=[Depends(require_api_key), Depends(require_bot_ready)])
