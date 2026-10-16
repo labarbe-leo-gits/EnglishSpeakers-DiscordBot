@@ -376,6 +376,7 @@ async def help_command(ctx: commands.Context):
     embed.add_field(name="`/info`", value="View all official web pages, student portals, and community links.", inline=False)
     embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
     embed.add_field(name="`/attendance`", value="Check your attendance linked to your Discord username.", inline=False)
+    embed.add_field(name="`/events`", value="Display the upcoming events from the website's event calendar.", inline=False)
     embed.add_field(name="`/help`", value="Display this help message with command info.", inline=False)
 
     await ctx.send(embed=embed)
@@ -509,6 +510,46 @@ async def attendance(ctx: commands.Context):
             value="\n".join(lines[:15]),
             inline=False,
         )
+
+    embed.set_footer(text="English Speakers Association")
+    await ctx.send(embed=embed, ephemeral=True)
+
+@bot.hybrid_command(name="events", description="Display upcoming events from the website's event calendar.")
+async def events(ctx: commands.Context):
+    await ctx.defer(ephemeral=True)
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            headers = await auth_headers()
+            response = await client.get(
+                API_URL,
+                params={"resource": "events"},
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError, HTTPException):
+        await ctx.send(
+            "Unable to retrieve events at this time. Please try again later.",
+            ephemeral=True,
+        )
+        return
+
+    events_list = data.get("events", [])
+    if not events_list:
+        await ctx.send("No upcoming events found.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Upcoming Events",
+        color=discord.Color.blue(),
+    )
+
+    for event in events_list[:10]:  # Limit to first 10 events
+        name = event.get("name", "Unnamed Event")
+        date = event.get("date", "Unknown Date")
+        description = event.get("description", "No description available.")
+        embed.add_field(name=f"{name} - {date}", value=description, inline=False)
 
     embed.set_footer(text="English Speakers Association")
     await ctx.send(embed=embed, ephemeral=True)
