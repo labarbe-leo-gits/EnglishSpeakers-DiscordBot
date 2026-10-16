@@ -549,6 +549,36 @@ async def events(ctx: commands.Context):
         name = event.get("event_name", "Unnamed Event")
         date = event.get("event_date", "Unknown Date")
         description = event.get("description", "No description available.")
+
+        # If description is None or "", replace it with a default message
+        if not description:
+            description = "No description available."
+
+        if len(description) > 1024:
+            description = description[:1021] + "..."
+
+        if description.strip() == "":
+            description = "No description available."
+
+        if description == None:
+            description = "No description available."
+
+        # Format date as "DD/MM/YYYY" if possible
+        try:
+            from datetime import datetime
+            parsed_date = datetime.strptime(date, "%Y-%m-%d")
+            date = parsed_date.strftime("%d/%m/%Y")
+        except ValueError:
+            pass  # Keep the original date if parsing fails
+
+        # Keep only the events that are in the future or today
+        try:
+            event_date_obj = datetime.strptime(date, "%d/%m/%Y")
+            if event_date_obj < datetime.now():
+                continue  # Skip past events
+        except ValueError:
+            pass  # If date parsing fails, include the event anyway
+
         embed.add_field(name=f"{name} - {date}", value=description, inline=False)
 
     embed.set_footer(text="English Speakers Association")
