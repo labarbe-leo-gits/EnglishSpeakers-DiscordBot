@@ -177,8 +177,6 @@ async def login_admin_portal(email: str, password: str) -> dict:
     if not email or not password:
         raise HTTPException(status_code=400, detail="Credentials required.")
 
-    # For now this is the same request as the standard (unique_name) login,
-    # but with the email instead. user_type="admin" restricts it to ADMINS accounts.
     return await api_validate_credentials(
         {"email": email, "password": password, "user_type": "admin"}
     )
@@ -211,8 +209,6 @@ async def fetch_speakers() -> list:
     return response.json().get("speakers", [])
 
 async def fetch_variable(client: httpx.AsyncClient, name: str):
-    """Returns the value of a variable from the API's variables route.
-    The API answers {"success": true, "variable": {"variable_name": ..., "variable_value": ...}}."""
     response = None
     for attempt in range(2):
         headers = await auth_headers(force_refresh=(attempt == 1))
@@ -228,7 +224,7 @@ async def fetch_variable(client: httpx.AsyncClient, name: str):
     return variable.get("variable_value")
 
 async def fetch_admin_attendance(admin_id: str) -> list:
-    """Fetches the attendance records for an admin account by ID. Returns a list of attendance records. Fetches using resource=admins&id=id&action=attendance"""
+    """Fetches the attendance records for an admin account by ID. Returns a list of attendance records."""
     response = None
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         for attempt in range(2):
@@ -244,11 +240,10 @@ async def fetch_admin_attendance(admin_id: str) -> list:
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Failed to fetch admin attendance.")
 
-    return response.json().get("attendance", [])
+    # FIXED: Extract from "admin" key based on your JSON structure
+    return response.json().get("admin", [])
 
 def to_number(value, default):
-    """The API returns numbers as strings (e.g. "10.50"). Returns an int when the
-    value is whole (9.0 -> 9), otherwise a float, or `default` if it isn't a number."""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -274,9 +269,6 @@ async def resolve_channel(channel_id: str):
     return channel
 
 async def render_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
-    """Shared export request: POSTs member_id / unique_name / password to the
-    export page and prints the result to PDF. Values are passed to the browser
-    as arguments (not pasted into the JS), so quotes in a password can't break it."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -315,48 +307,6 @@ async def render_member_pdf(member_id: str, unique_name: str, password: str) -> 
         finally:
             await browser.close()
 
-async def render_admin_pdf(admin_id: str, email: str, password: str) -> bytes:
-    """Shared export request for admins: POSTs admin_id / email / password to the
-    export page and prints the result to PDF. Values are passed to the browser
-    as arguments (not pasted into the JS), so quotes in a password can't break it."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            context = await browser.new_context()
-            page = await context.new_page()
-
-            export_url = "https://hainu.fr/englishspeakers/common/export_admin_pdf.php"
-            await page.goto(export_url)
-
-            await page.evaluate(
-                """([action, fields]) => {
-                    const form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = action;
-
-                    for (const [key, value] of Object.entries(fields)) {
-                        const input = document.createElement('input');
-                        input.type = 'hidden';
-                        input.name = key;
-                        input.value = value;
-                        form.appendChild(input);
-                    }
-
-                    document.body.appendChild(form);
-                    form.submit();
-                }""",
-                [export_url, {
-                    "admin_id": admin_id,
-                    "email": email,
-                    "password": password,
-                }],
-            )
-
-            await page.wait_for_load_state("networkidle")
-            return await page.pdf(format="A4", print_background=True)
-        finally:
-            await browser.close()
-
 async def generate_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
     credentials_valid = await login_speaker_student_portal(unique_name, password)
     if not credentials_valid:
@@ -369,15 +319,12 @@ async def generate_admin_member_pdf(
 ) -> bytes:
     login = await login_admin_portal(email, password)
 
-    # The credentials must belong to the admin account linked to this Discord user
     if str(login.get("user", {}).get("id")) != str(member_id):
         raise HTTPException(
             status_code=401,
             detail="These credentials don't match your linked admin account.",
         )
 
-    # TODO: for now this copies the standard export request as-is.
-    # The admin's unique_name (or email as a fallback) goes in the unique_name field.
     return await render_member_pdf(member_id, admin_unique_name or email, password)
 
 # ---------- Modals ----------
@@ -496,7 +443,7 @@ async def points(ctx: commands.Context):
             break
 
     if not matched_speaker:
-        await ctx.send("No speaker account is linked to your Discord username.")
+        await ctx.send("No speaker account is linked to your Discord username.", ephemeral=True)
         return
 
     points_value = matched_speaker.get("points", "N/A")
@@ -582,7 +529,6 @@ async def pdf_command(interaction: discord.Interaction):
         await interaction.response.send_modal(PDFAuthModal(member_id=speaker_id))
         return
 
-    # Not a speaker -> check whether this Discord account belongs to an admin
     try:
         admin = await find_admin_by_discord(interaction.user)
     except Exception as e:
@@ -605,10 +551,8 @@ async def pdf_command(interaction: discord.Interaction):
 
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
+    # Defer interaction as ephemeral to ensure a single clean response thread
     await ctx.defer(ephemeral=True)
-
-    # Add a loading message to inform the user that the bot is processing their request
-    await ctx.send("Fetching your attendance record, please wait...", ephemeral=True)
 
     user_name = ctx.author.name.lower()
     full_user = str(ctx.author).lower()
@@ -616,7 +560,7 @@ async def attendance(ctx: commands.Context):
     try:
         speakers = await fetch_speakers()
     except Exception:
-        await ctx.send(
+        await ctx.followup.send(
             "Unable to retrieve speaker records at this time. Please try again later.",
             ephemeral=True,
         )
@@ -641,14 +585,14 @@ async def attendance(ctx: commands.Context):
             try:
                 attendance_list = await fetch_admin_attendance(str(admin.get("id")))
             except Exception:
-                await ctx.send(
+                await ctx.followup.send(
                     "Unable to retrieve admin attendance at this time. Please try again later.",
                     ephemeral=True,
                 )
                 return
 
             if not attendance_list:
-                await ctx.send("No attendance record found for this admin account.", ephemeral=True)
+                await ctx.followup.send("No attendance record found for this admin account.", ephemeral=True)
                 return
 
             embed = discord.Embed(
@@ -662,13 +606,12 @@ async def attendance(ctx: commands.Context):
                 if isinstance(record, dict):
                     date = record.get("session_date", "Unknown Date")
 
-                    # Format the date as "DD/MM/YYYY"
                     try:
                         from datetime import datetime
                         parsed_date = datetime.strptime(date, "%Y-%m-%d")
                         date = parsed_date.strftime("%d/%m/%Y")
                     except ValueError:
-                        pass  # Keep the original date if parsing fails
+                        pass
 
                     status = record.get("status", "Present")
                     session = record.get("session_name", "")
@@ -683,15 +626,17 @@ async def attendance(ctx: commands.Context):
             )
 
             embed.set_footer(text="English Speakers Association")
+            await ctx.followup.send(embed=embed, ephemeral=True)
+            return
 
+        await ctx.followup.send("No account is linked to your Discord username.", ephemeral=True)
         return
 
     speaker_id = matched_speaker.get("id") or matched_speaker.get("member_id")
     if not speaker_id:
-        await ctx.send("Invalid speaker account data (missing ID).", ephemeral=True)
+        await ctx.followup.send("Invalid speaker account data (missing ID).", ephemeral=True)
         return
 
-    # Reuse the authenticated helper (with token refresh on 401)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
             data = None
@@ -707,14 +652,14 @@ async def attendance(ctx: commands.Context):
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError, HTTPException):
-        await ctx.send(
+        await ctx.followup.send(
             "Unable to retrieve attendance details at this time. Please try again later.",
             ephemeral=True,
         )
         return
 
     if not data.get("success") or not data.get("speaker"):
-        await ctx.send("No attendance record found for this ID.", ephemeral=True)
+        await ctx.followup.send("No attendance record found for this ID.", ephemeral=True)
         return
 
     speaker = data["speaker"]
@@ -735,13 +680,12 @@ async def attendance(ctx: commands.Context):
             if isinstance(record, dict):
                 date = record.get("session_date", "Unknown Date")
 
-                # Format the date as "DD/MM/YYYY"
                 try:
                     from datetime import datetime
                     parsed_date = datetime.strptime(date, "%Y-%m-%d")
                     date = parsed_date.strftime("%d/%m/%Y")
                 except ValueError:
-                    pass  # Keep the original date if parsing fails
+                    pass
                 status = record.get("status", "Present")
                 session = record.get("session_name", "")
                 lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
@@ -755,7 +699,7 @@ async def attendance(ctx: commands.Context):
         )
 
     embed.set_footer(text="English Speakers Association")
-    await ctx.send(embed=embed, ephemeral=True)
+    await ctx.followup.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="events", description="Display upcoming events from the website's event calendar.")
 async def events(ctx: commands.Context):
@@ -772,7 +716,7 @@ async def events(ctx: commands.Context):
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError, HTTPException):
-        await ctx.send(
+        await ctx.followup.send(
             "Unable to retrieve events at this time. Please try again later.",
             ephemeral=True,
         )
@@ -780,7 +724,7 @@ async def events(ctx: commands.Context):
 
     events_list = data.get("events", [])
     if not events_list:
-        await ctx.send("No upcoming events found.", ephemeral=True)
+        await ctx.followup.send("No upcoming events found.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -788,48 +732,37 @@ async def events(ctx: commands.Context):
         color=discord.Color.blue(),
     )
 
-    for event in events_list[:10]:  # Limit to first 10 events
+    for event in events_list[:10]:
         name = event.get("event_name", "Unnamed Event")
         date = event.get("event_date", "Unknown Date")
         description = event.get("description", "No description available.")
 
-        # If description is None or "", replace it with a default message
         if not description:
             description = "No description available."
 
         if len(description) > 1024:
             description = description[:1021] + "..."
 
-        if description.strip() == "":
-            description = "No description available."
-
-        if description == None:
-            description = "No description available."
-
-        # Format date as "DD/MM/YYYY" if possible
         try:
             from datetime import datetime
             parsed_date = datetime.strptime(date, "%Y-%m-%d")
             date = parsed_date.strftime("%d/%m/%Y")
         except ValueError:
-            pass  # Keep the original date if parsing fails
+            pass
 
-        # Keep only the events that are in the future or today
         try:
             event_date_obj = datetime.strptime(date, "%d/%m/%Y")
             if event_date_obj < datetime.now():
-                continue  # Skip past events
+                continue
         except ValueError:
-            pass  # If date parsing fails, include the event anyway
+            pass
 
         embed.add_field(name=f"{name} - {date}", value=description, inline=False)
 
     embed.set_footer(text="English Speakers Association")
-    await ctx.send(embed=embed, ephemeral=True)
+    await ctx.followup.send(embed=embed, ephemeral=True)
 
 async def find_admin_by_discord(author) -> Optional[dict]:
-    """Look up an admin account by Discord username.
-    Returns the admin dict, or None if there is no match."""
     candidates = []
     for name in (author.name, str(author)):
         if name and name not in candidates:
@@ -849,7 +782,7 @@ async def find_admin_by_discord(author) -> Optional[dict]:
                     break
  
             if response.status_code == 404:
-                continue  # not an admin under this name, try the next one
+                continue
  
             response.raise_for_status()
             data = response.json()
@@ -857,7 +790,6 @@ async def find_admin_by_discord(author) -> Optional[dict]:
                 return data["admin"]
  
     return None
- 
  
 @bot.hybrid_command(name="me", description="Get all available information about your English Speakers account.")
 async def me(ctx: commands.Context):
@@ -869,7 +801,7 @@ async def me(ctx: commands.Context):
     try:
         speakers = await fetch_speakers()
     except Exception as e:
-        await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
+        await ctx.followup.send(f"Error fetching speaker records: {e}", ephemeral=True)
         return
  
     matched = None
@@ -881,7 +813,6 @@ async def me(ctx: commands.Context):
             matched = speaker
             break
  
-    # Not a speaker -> check whether this Discord account belongs to an admin
     if not matched:
         try:
             admin = await find_admin_by_discord(ctx.author)
@@ -894,7 +825,7 @@ async def me(ctx: commands.Context):
             account_type = "Admin"
  
     if not matched:
-        await ctx.send(
+        await ctx.followup.send(
             "No account is linked to your Discord username.",
             ephemeral=True,
         )
@@ -942,7 +873,7 @@ async def me(ctx: commands.Context):
         inline=False,
     )
  
-    await ctx.send(embed=embed, ephemeral=True)
+    await ctx.followup.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="details", description="Get details about points.")
 async def details(ctx: commands.Context):
@@ -965,7 +896,7 @@ async def details(ctx: commands.Context):
     embed.add_field(name="Points per Session", value=str(pts_per_session), inline=True)
     embed.set_footer(text="English Speakers Association")
 
-    await ctx.send(embed=embed, ephemeral=True)
+    await ctx.followup.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="rgpd", description="Get information about your data privacy and rights under GDPR.")
 async def rgpd(ctx: commands.Context):
@@ -983,7 +914,7 @@ async def rgpd(ctx: commands.Context):
         color=discord.Color.blue(),
     )
 
-    await ctx.send(embed=embed, ephemeral=True)
+    await ctx.followup.send(embed=embed, ephemeral=True)
 
 # ---------- Endpoints ----------
 
