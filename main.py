@@ -227,6 +227,25 @@ async def fetch_variable(client: httpx.AsyncClient, name: str):
     variable = response.json().get("variable") or {}
     return variable.get("variable_value")
 
+async def fetch_admin_attendance(admin_id: str) -> list:
+    """Fetches the attendance records for an admin account by ID. Returns a list of attendance records. Fetches using resource=admins&id=id&action=attendance"""
+    response = None
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+        for attempt in range(2):
+            headers = await auth_headers(force_refresh=(attempt == 1))
+            response = await client.get(
+                API_URL,
+                params={"resource": "admins", "id": admin_id, "action": "attendance"},
+                headers=headers,
+            )
+            if response.status_code != 401:
+                break
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to fetch admin attendance.")
+
+    return response.json().get("attendance", [])
+
 def to_number(value, default):
     """The API returns numbers as strings (e.g. "10.50"). Returns an int when the
     value is whole (9.0 -> 9), otherwise a float, or `default` if it isn't a number."""
@@ -287,6 +306,48 @@ async def render_member_pdf(member_id: str, unique_name: str, password: str) -> 
                 [export_url, {
                     "member_id": member_id,
                     "unique_name": unique_name,
+                    "password": password,
+                }],
+            )
+
+            await page.wait_for_load_state("networkidle")
+            return await page.pdf(format="A4", print_background=True)
+        finally:
+            await browser.close()
+
+async def render_admin_pdf(admin_id: str, email: str, password: str) -> bytes:
+    """Shared export request for admins: POSTs admin_id / email / password to the
+    export page and prints the result to PDF. Values are passed to the browser
+    as arguments (not pasted into the JS), so quotes in a password can't break it."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+
+            export_url = "https://hainu.fr/englishspeakers/common/export_admin_pdf.php"
+            await page.goto(export_url)
+
+            await page.evaluate(
+                """([action, fields]) => {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = action;
+
+                    for (const [key, value] of Object.entries(fields)) {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = key;
+                        input.value = value;
+                        form.appendChild(input);
+                    }
+
+                    document.body.appendChild(form);
+                    form.submit();
+                }""",
+                [export_url, {
+                    "admin_id": admin_id,
+                    "email": email,
                     "password": password,
                 }],
             )
@@ -569,11 +630,60 @@ async def attendance(ctx: commands.Context):
             break
 
     if not matched_speaker:
-        await ctx.send(
-            "No speaker account is linked to your Discord username. "
-            "Please ensure your Discord username is set in the portal.",
-            ephemeral=True,
-        )
+        # Check if this Discord account belongs to an admin
+        try:
+            admin = await find_admin_by_discord(ctx.author)
+        except Exception:
+            admin = None
+
+        if admin:
+            # Fetch the admin attendance
+            try:
+                attendance_list = await fetch_admin_attendance(str(admin.get("id")))
+            except Exception:
+                await ctx.send(
+                    "Unable to retrieve admin attendance at this time. Please try again later.",
+                    ephemeral=True,
+                )
+                return
+
+            if not attendance_list:
+                await ctx.send("No attendance record found for this admin account.", ephemeral=True)
+                return
+
+            embed = discord.Embed(
+                title=f"Attendance for {admin.get('full_name', ctx.author.display_name)}",
+                color=discord.Color.blue(),
+            )
+
+            lines = []
+
+            for record in attendance_list:
+                if isinstance(record, dict):
+                    date = record.get("session_date", "Unknown Date")
+
+                    # Format the date as "DD/MM/YYYY"
+                    try:
+                        from datetime import datetime
+                        parsed_date = datetime.strptime(date, "%Y-%m-%d")
+                        date = parsed_date.strftime("%d/%m/%Y")
+                    except ValueError:
+                        pass  # Keep the original date if parsing fails
+
+                    status = record.get("status", "Present")
+                    session = record.get("session_name", "")
+                    lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
+                else:
+                    lines.append(f"• **{record}**")
+
+            embed.add_field(
+                name=f"Attendance ({len(attendance_list)})",
+                value="\n".join(lines[:15]),
+                inline=False,
+            )
+
+            embed.set_footer(text="English Speakers Association")
+
         return
 
     speaker_id = matched_speaker.get("id") or matched_speaker.get("member_id")
@@ -843,7 +953,7 @@ async def details(ctx: commands.Context):
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
             max_points = to_number(await fetch_variable(client, "max_points"), 9)
-            pts_per_session = to_number(await fetch_variable(client, "pts_per_session"), 1)
+            pts_per_session = to_number(await fetch_variable(client, "pts_per_sessions"), 1)
     except Exception as e:
         print(f"[details] variable lookup failed: {e}")
 
