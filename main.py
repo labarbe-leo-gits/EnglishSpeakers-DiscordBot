@@ -461,7 +461,11 @@ class PDFAuthModal(discord.ui.Modal, title="Export Member PDF"):
         self.member_id = member_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Loading message (ephemeral), replaced by the PDF afterwards
+        await interaction.response.send_message(
+            "⏳ Generating your PDF report, please wait...",
+            ephemeral=True
+        )
 
         try:
             pdf_bytes = await generate_member_pdf(
@@ -475,15 +479,14 @@ class PDFAuthModal(discord.ui.Modal, title="Export Member PDF"):
                 filename=f"member_report_{self.member_id}.pdf"
             )
 
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="Here is your exported PDF report:",
-                file=file,
-                ephemeral=True
+                attachments=[file]
             )
         except Exception as e:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Error generating PDF. Please check your credentials and try again.\nDetails: {str(e)}",
-                ephemeral=True
+                attachments=[]
             )
 
 class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
@@ -505,7 +508,11 @@ class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
         self.admin_unique_name = admin_unique_name
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Loading message (ephemeral), replaced by the PDF afterwards
+        await interaction.response.send_message(
+            "⏳ Generating your PDF report, please wait...",
+            ephemeral=True
+        )
 
         try:
             pdf_bytes = await generate_admin_member_pdf(
@@ -520,15 +527,14 @@ class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
                 filename=f"admin_report_{self.member_id}.pdf"
             )
 
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content="Here is your exported PDF report:",
-                file=file,
-                ephemeral=True
+                attachments=[file]
             )
         except Exception as e:
-            await interaction.followup.send(
+            await interaction.edit_original_response(
                 content=f"Error generating PDF. Please check your credentials and try again.\nDetails: {str(e)}",
-                ephemeral=True
+                attachments=[]
             )
 
 # ---------- Bot Commands ----------
