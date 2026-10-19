@@ -607,10 +607,27 @@ async def me(ctx: commands.Context):
             break
 
     if not matched_speaker:
+        # Try ot fetch an admin account if the user is an admin
+        # Uses the ?resource=admins&id= endpoint to check if the user is an admin
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                headers = await auth_headers()
+                response = await client.get(
+                    API_URL,
+                    params={"resource": "admins", "id": ctx.author.id},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+                if data.get("success") and data.get("admin"):
+                    matched_speaker = data["admin"]
+        except Exception:
+            pass  # Ignore errors and continue
+
         await ctx.send(
-            "No speaker account is linked to your Discord account.",
-            ephemeral=True
-        )
+                    "No speaker account is linked to your Discord account.",
+                    ephemeral=True
+                )
         return
 
     embed = discord.Embed(
