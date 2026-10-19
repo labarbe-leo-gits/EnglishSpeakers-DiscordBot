@@ -2,6 +2,7 @@ import io
 import os
 import asyncio
 import secrets
+from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -177,6 +178,8 @@ async def login_admin_portal(email: str, password: str) -> dict:
     if not email or not password:
         raise HTTPException(status_code=400, detail="Credentials required.")
 
+    # Same request as the standard (unique_name) login, but with the email instead.
+    # user_type="admin" restricts it to ADMINS accounts.
     return await api_validate_credentials(
         {"email": email, "password": password, "user_type": "admin"}
     )
@@ -209,6 +212,8 @@ async def fetch_speakers() -> list:
     return response.json().get("speakers", [])
 
 async def fetch_variable(client: httpx.AsyncClient, name: str):
+    """Returns the value of a variable from the API's variables route.
+    The API answers {"success": true, "variable": {"variable_name": ..., "variable_value": ...}}."""
     response = None
     for attempt in range(2):
         headers = await auth_headers(force_refresh=(attempt == 1))
@@ -224,7 +229,8 @@ async def fetch_variable(client: httpx.AsyncClient, name: str):
     return variable.get("variable_value")
 
 async def fetch_admin_attendance(admin_id: str) -> list:
-    """Fetches the attendance records for an admin account by ID. Returns a list of attendance records."""
+    """Fetches the attendance records for an admin account by ID.
+    Always returns a list, whatever shape the API answers with."""
     response = None
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         for attempt in range(2):
@@ -240,15 +246,71 @@ async def fetch_admin_attendance(admin_id: str) -> list:
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Failed to fetch admin attendance.")
 
-    # FIXED: Extract from "admin" key based on your JSON structure
-    return response.json().get("admin", [])
+    data = response.json()
+
+    # Possible shapes:
+    #   {"attendance": [...]}
+    #   {"admin": [...]}
+    #   {"admin": {..., "attendance": [...]}}
+    if isinstance(data.get("attendance"), list):
+        return data["attendance"]
+
+    admin = data.get("admin")
+    if isinstance(admin, list):
+        return admin
+    if isinstance(admin, dict):
+        records = admin.get("attendance")
+        return records if isinstance(records, list) else []
+
+    return []
 
 def to_number(value, default):
+    """The API returns numbers as strings (e.g. "10.50"). Returns an int when the
+    value is whole (9.0 -> 9), otherwise a float, or `default` if it isn't a number."""
     try:
         number = float(value)
     except (TypeError, ValueError):
         return default
     return int(number) if number == int(number) else number
+
+def find_speaker_by_discord(speakers: list, author) -> Optional[dict]:
+    """Returns the speaker whose linked discord_username matches the Discord user."""
+    user_name = author.name.lower()
+    full_user = str(author).lower()
+    for speaker in speakers:
+        api_username = (speaker.get("discord_username") or "").lower()
+        if api_username and api_username in (user_name, full_user):
+            return speaker
+    return None
+
+def format_date(value) -> str:
+    """Converts YYYY-MM-DD to DD/MM/YYYY. Never raises."""
+    if not isinstance(value, str) or not value:
+        return "Unknown Date"
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return value
+
+def build_attendance_value(records: list) -> str:
+    """Builds an embed field value that always respects Discord's 1-1024 char limit."""
+    lines = []
+    for record in records:
+        if isinstance(record, dict):
+            date = format_date(record.get("session_date"))
+            status = record.get("status") or "Present"
+            session = record.get("session_name") or ""
+            lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
+        else:
+            lines.append(f"• **{record}**")
+
+    if not lines:
+        return "No attendance records found."
+
+    value = "\n".join(lines[:15])
+    if len(value) > 1024:
+        value = value[:1021] + "..."
+    return value
 
 async def resolve_channel(channel_id: str):
     if not channel_id.isdigit():
@@ -268,14 +330,16 @@ async def resolve_channel(channel_id: str):
         raise HTTPException(status_code=400, detail="Channel cannot receive messages.")
     return channel
 
-async def render_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
+async def _post_form_and_print_pdf(export_url: str, fields: dict) -> bytes:
+    """Opens the export page, POSTs `fields` through a generated form and prints
+    the result to PDF. Values are passed to the browser as arguments (not pasted
+    into the JS), so quotes in a password can't break it."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
             context = await browser.new_context()
             page = await context.new_page()
 
-            export_url = "https://hainu.fr/englishspeakers/public/export_member_pdf.php"
             await page.goto(export_url)
 
             await page.evaluate(
@@ -295,17 +359,35 @@ async def render_member_pdf(member_id: str, unique_name: str, password: str) -> 
                     document.body.appendChild(form);
                     form.submit();
                 }""",
-                [export_url, {
-                    "member_id": member_id,
-                    "unique_name": unique_name,
-                    "password": password,
-                }],
+                [export_url, fields],
             )
 
             await page.wait_for_load_state("networkidle")
             return await page.pdf(format="A4", print_background=True)
         finally:
             await browser.close()
+
+async def render_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
+    """Export request for speakers: POSTs member_id / unique_name / password."""
+    return await _post_form_and_print_pdf(
+        "https://hainu.fr/englishspeakers/public/export_member_pdf.php",
+        {
+            "member_id": member_id,
+            "unique_name": unique_name,
+            "password": password,
+        },
+    )
+
+async def render_admin_pdf(admin_id: str, email: str, password: str) -> bytes:
+    """Export request for admins: POSTs admin_id / email / password."""
+    return await _post_form_and_print_pdf(
+        "https://hainu.fr/englishspeakers/common/export_admin_pdf.php",
+        {
+            "admin_id": admin_id,
+            "email": email,
+            "password": password,
+        },
+    )
 
 async def generate_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
     credentials_valid = await login_speaker_student_portal(unique_name, password)
@@ -319,13 +401,45 @@ async def generate_admin_member_pdf(
 ) -> bytes:
     login = await login_admin_portal(email, password)
 
+    # The credentials must belong to the admin account linked to this Discord user
     if str(login.get("user", {}).get("id")) != str(member_id):
         raise HTTPException(
             status_code=401,
             detail="These credentials don't match your linked admin account.",
         )
 
-    return await render_member_pdf(member_id, admin_unique_name or email, password)
+    return await render_admin_pdf(member_id, email, password)
+
+async def find_admin_by_discord(author) -> Optional[dict]:
+    """Look up an admin account by Discord username.
+    Returns the admin dict, or None if there is no match."""
+    candidates = []
+    for name in (author.name, str(author)):
+        if name and name not in candidates:
+            candidates.append(name)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        for candidate in candidates:
+            response = None
+            for attempt in range(2):
+                headers = await auth_headers(force_refresh=(attempt == 1))
+                response = await client.get(
+                    API_URL,
+                    params={"resource": "admins", "discord_username": candidate},
+                    headers=headers,
+                )
+                if response.status_code != 401:
+                    break
+
+            if response.status_code == 404:
+                continue  # not an admin under this name, try the next one
+
+            response.raise_for_status()
+            data = response.json()
+            if data.get("success") and data.get("admin"):
+                return data["admin"]
+
+    return None
 
 # ---------- Modals ----------
 
@@ -420,27 +534,20 @@ class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
 # ---------- Bot Commands ----------
 
 @bot.hybrid_command(
-    name="points", 
+    name="points",
     description="Check your points balance automatically using your linked Discord account."
 )
 async def points(ctx: commands.Context):
-    await ctx.defer()
-
-    user_name = ctx.author.name.lower()
-    full_user = str(ctx.author).lower()
+    # Ephemeral defer: the ephemeral flag of later messages is ignored otherwise.
+    await ctx.defer(ephemeral=True)
 
     try:
         speakers = await fetch_speakers()
     except HTTPException as e:
-        await ctx.send(f"Error fetching data: {e.detail}")
+        await ctx.send(f"Error fetching data: {e.detail}", ephemeral=True)
         return
 
-    matched_speaker = None
-    for speaker in speakers:
-        api_username = (speaker.get("discord_username") or "").lower()
-        if api_username and api_username in (user_name, full_user):
-            matched_speaker = speaker
-            break
+    matched_speaker = find_speaker_by_discord(speakers, ctx.author)
 
     if not matched_speaker:
         await ctx.send("No speaker account is linked to your Discord username.", ephemeral=True)
@@ -449,8 +556,8 @@ async def points(ctx: commands.Context):
     points_value = matched_speaker.get("points", "N/A")
 
     embed = discord.Embed(title="Your Points Balance", color=discord.Color.blue())
-    embed.add_field(name="First Name", value=matched_speaker.get("first_name", "N/A"), inline=True)
-    embed.add_field(name="Last Name", value=matched_speaker.get("last_name", "N/A"), inline=True)
+    embed.add_field(name="First Name", value=matched_speaker.get("first_name") or "N/A", inline=True)
+    embed.add_field(name="Last Name", value=matched_speaker.get("last_name") or "N/A", inline=True)
     embed.add_field(name="Class", value=matched_speaker.get("class") or "N/A", inline=True)
     embed.add_field(name="Points", value=str(points_value), inline=False)
     embed.add_field(
@@ -459,7 +566,7 @@ async def points(ctx: commands.Context):
         inline=False,
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="info", description="Get helpful links and portal resources.")
 async def info(ctx: commands.Context):
@@ -475,7 +582,7 @@ async def info(ctx: commands.Context):
         ("Term of Service", "https://hainu.fr/englishspeakers/legal/tos.php"),
         ("Privacy Policy", "https://hainu.fr/englishspeakers/legal/privacy.php")
     ]
-    
+
     linear_text = "\n".join([f"**{title}** : {url}" for title, url in links])
 
     embed = discord.Embed(
@@ -493,7 +600,7 @@ async def help_command(ctx: commands.Context):
         description="Here is a list of all available commands:",
         color=discord.Color.blue()
     )
-    
+
     embed.add_field(name="`/points`", value="Check your points balance linked to your Discord username.", inline=False)
     embed.add_field(name="`/info`", value="View all official web pages, student portals, and community links.", inline=False)
     embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
@@ -508,27 +615,20 @@ async def help_command(ctx: commands.Context):
 
 @bot.tree.command(name="pdf", description="Prompt for credentials and export your member PDF.")
 async def pdf_command(interaction: discord.Interaction):
-    user_name = interaction.user.name.lower()
-    full_user = str(interaction.user).lower()
-
     try:
         speakers = await fetch_speakers()
     except Exception as e:
         await interaction.response.send_message(f"Error fetching speaker records: {e}", ephemeral=True)
         return
 
-    matched_speaker = None
-    for speaker in speakers:
-        api_username = (speaker.get("discord_username") or "").lower()
-        if api_username and api_username in (user_name, full_user):
-            matched_speaker = speaker
-            break
+    matched_speaker = find_speaker_by_discord(speakers, interaction.user)
 
     if matched_speaker:
         speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
         await interaction.response.send_modal(PDFAuthModal(member_id=speaker_id))
         return
 
+    # Not a speaker -> check whether this Discord account belongs to an admin
     try:
         admin = await find_admin_by_discord(interaction.user)
     except Exception as e:
@@ -551,95 +651,71 @@ async def pdf_command(interaction: discord.Interaction):
 
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
-    # Defer interaction as ephemeral to ensure a single clean response thread
+    # The ephemeral defer already shows the "thinking" state, no extra message needed.
     await ctx.defer(ephemeral=True)
-
-    user_name = ctx.author.name.lower()
-    full_user = str(ctx.author).lower()
 
     try:
         speakers = await fetch_speakers()
     except Exception:
-        await ctx.followup.send(
+        await ctx.send(
             "Unable to retrieve speaker records at this time. Please try again later.",
             ephemeral=True,
         )
         return
 
-    matched_speaker = None
-    for speaker in speakers:
-        api_username = (speaker.get("discord_username") or "").lower()
-        if api_username and api_username in (user_name, full_user):
-            matched_speaker = speaker
-            break
+    matched_speaker = find_speaker_by_discord(speakers, ctx.author)
 
+    # ----- Admin path -----
     if not matched_speaker:
-        # Check if this Discord account belongs to an admin
         try:
             admin = await find_admin_by_discord(ctx.author)
-        except Exception:
+        except Exception as e:
+            print(f"[attendance] admin lookup failed: {e}")
             admin = None
 
-        if admin:
-            # Fetch the admin attendance
-            try:
-                attendance_list = await fetch_admin_attendance(str(admin.get("id")))
-            except Exception:
-                await ctx.followup.send(
-                    "Unable to retrieve admin attendance at this time. Please try again later.",
-                    ephemeral=True,
-                )
-                return
-
-            if not attendance_list:
-                await ctx.followup.send("No attendance record found for this admin account.", ephemeral=True)
-                return
-
-            embed = discord.Embed(
-                title=f"Attendance for {admin.get('full_name', ctx.author.display_name)}",
-                color=discord.Color.blue(),
-            )
-
-            lines = []
-
-            for record in attendance_list:
-                if isinstance(record, dict):
-                    date = record.get("session_date", "Unknown Date")
-
-                    try:
-                        from datetime import datetime
-                        parsed_date = datetime.strptime(date, "%Y-%m-%d")
-                        date = parsed_date.strftime("%d/%m/%Y")
-                    except ValueError:
-                        pass
-
-                    status = record.get("status", "Present")
-                    session = record.get("session_name", "")
-                    lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
-                else:
-                    lines.append(f"• **{record}**")
-
-            embed.add_field(
-                name=f"Attendance ({len(attendance_list)})",
-                value="\n".join(lines[:15]),
-                inline=False,
-            )
-
-            embed.set_footer(text="English Speakers Association")
-            await ctx.followup.send(embed=embed, ephemeral=True)
+        if not admin:
+            await ctx.send("No account is linked to your Discord username.", ephemeral=True)
             return
 
-        await ctx.followup.send("No account is linked to your Discord username.", ephemeral=True)
+        try:
+            attendance_list = await fetch_admin_attendance(str(admin.get("id")))
+        except Exception as e:
+            print(f"[attendance] admin attendance failed: {e}")
+            await ctx.send(
+                "Unable to retrieve admin attendance at this time. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        if not attendance_list:
+            await ctx.send("No attendance record found for this admin account.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"Attendance for {admin.get('full_name') or ctx.author.display_name}",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name=f"Attendance ({len(attendance_list)})",
+            value=build_attendance_value(attendance_list),
+            inline=False,
+        )
+        embed.set_footer(text="English Speakers Association")
+
+        # This send was missing: without it the deferred response never completes.
+        await ctx.send(embed=embed, ephemeral=True)
         return
 
+    # ----- Speaker path -----
     speaker_id = matched_speaker.get("id") or matched_speaker.get("member_id")
     if not speaker_id:
-        await ctx.followup.send("Invalid speaker account data (missing ID).", ephemeral=True)
+        await ctx.send("Invalid speaker account data (missing ID).", ephemeral=True)
         return
 
+    # Authenticated request (with token refresh on 401)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            data = None
+            response = None
             for attempt in range(2):
                 headers = await auth_headers(force_refresh=(attempt == 1))
                 response = await client.get(
@@ -652,54 +728,33 @@ async def attendance(ctx: commands.Context):
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError, HTTPException):
-        await ctx.followup.send(
+        await ctx.send(
             "Unable to retrieve attendance details at this time. Please try again later.",
             ephemeral=True,
         )
         return
 
     if not data.get("success") or not data.get("speaker"):
-        await ctx.followup.send("No attendance record found for this ID.", ephemeral=True)
+        await ctx.send("No attendance record found for this ID.", ephemeral=True)
         return
 
     speaker = data["speaker"]
-    attendance_list = speaker.get("attendance", [])
+    attendance_list = speaker.get("attendance") or []
 
     embed = discord.Embed(
-        title=f"Attendance for {speaker.get('full_name', ctx.author.display_name)}",
+        title=f"Attendance for {speaker.get('full_name') or ctx.author.display_name}",
         color=discord.Color.blue(),
     )
     embed.add_field(name="Class", value=speaker.get("class") or "N/A", inline=True)
     embed.add_field(name="Points", value=str(speaker.get("points", 0)), inline=True)
-
-    if not attendance_list:
-        embed.add_field(name="Attendance Record", value="No attendance records found.", inline=False)
-    else:
-        lines = []
-        for record in attendance_list:
-            if isinstance(record, dict):
-                date = record.get("session_date", "Unknown Date")
-
-                try:
-                    from datetime import datetime
-                    parsed_date = datetime.strptime(date, "%Y-%m-%d")
-                    date = parsed_date.strftime("%d/%m/%Y")
-                except ValueError:
-                    pass
-                status = record.get("status", "Present")
-                session = record.get("session_name", "")
-                lines.append(f"• **{date}** - {status}" + (f" ({session})" if session else ""))
-            else:
-                lines.append(f"• **{record}**")
-
-        embed.add_field(
-            name=f"Attendance ({len(attendance_list)})",
-            value="\n".join(lines[:15]),
-            inline=False,
-        )
+    embed.add_field(
+        name=f"Attendance ({len(attendance_list)})",
+        value=build_attendance_value(attendance_list),
+        inline=False,
+    )
 
     embed.set_footer(text="English Speakers Association")
-    await ctx.followup.send(embed=embed, ephemeral=True)
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="events", description="Display upcoming events from the website's event calendar.")
 async def events(ctx: commands.Context):
@@ -716,7 +771,7 @@ async def events(ctx: commands.Context):
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError, HTTPException):
-        await ctx.followup.send(
+        await ctx.send(
             "Unable to retrieve events at this time. Please try again later.",
             ephemeral=True,
         )
@@ -724,7 +779,7 @@ async def events(ctx: commands.Context):
 
     events_list = data.get("events", [])
     if not events_list:
-        await ctx.followup.send("No upcoming events found.", ephemeral=True)
+        await ctx.send("No upcoming events found.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -732,105 +787,78 @@ async def events(ctx: commands.Context):
         color=discord.Color.blue(),
     )
 
-    for event in events_list[:10]:
-        name = event.get("event_name", "Unnamed Event")
-        date = event.get("event_date", "Unknown Date")
-        description = event.get("description", "No description available.")
+    today = datetime.now().date()
+    shown = 0
 
-        if not description:
+    for event in events_list:
+        if shown >= 10:  # Limit to 10 events
+            break
+
+        name = event.get("event_name") or "Unnamed Event"
+        raw_date = event.get("event_date") or ""
+        description = event.get("description") or "No description available."
+
+        if not description.strip():
             description = "No description available."
-
         if len(description) > 1024:
             description = description[:1021] + "..."
 
+        # Format date as "DD/MM/YYYY" and keep only events today or in the future
+        display_date = raw_date or "Unknown Date"
         try:
-            from datetime import datetime
-            parsed_date = datetime.strptime(date, "%Y-%m-%d")
-            date = parsed_date.strftime("%d/%m/%Y")
-        except ValueError:
-            pass
+            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
+            if parsed.date() < today:
+                continue  # Skip past events
+            display_date = parsed.strftime("%d/%m/%Y")
+        except (ValueError, TypeError):
+            pass  # Unparseable date: include the event anyway
 
-        try:
-            event_date_obj = datetime.strptime(date, "%d/%m/%Y")
-            if event_date_obj < datetime.now():
-                continue
-        except ValueError:
-            pass
+        field_name = f"{name} - {display_date}"
+        if len(field_name) > 256:
+            field_name = field_name[:253] + "..."
 
-        embed.add_field(name=f"{name} - {date}", value=description, inline=False)
+        embed.add_field(name=field_name, value=description, inline=False)
+        shown += 1
+
+    if shown == 0:
+        await ctx.send("No upcoming events found.", ephemeral=True)
+        return
 
     embed.set_footer(text="English Speakers Association")
-    await ctx.followup.send(embed=embed, ephemeral=True)
+    await ctx.send(embed=embed, ephemeral=True)
 
-async def find_admin_by_discord(author) -> Optional[dict]:
-    candidates = []
-    for name in (author.name, str(author)):
-        if name and name not in candidates:
-            candidates.append(name)
- 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-        for candidate in candidates:
-            response = None
-            for attempt in range(2):
-                headers = await auth_headers(force_refresh=(attempt == 1))
-                response = await client.get(
-                    API_URL,
-                    params={"resource": "admins", "discord_username": candidate},
-                    headers=headers,
-                )
-                if response.status_code != 401:
-                    break
- 
-            if response.status_code == 404:
-                continue
- 
-            response.raise_for_status()
-            data = response.json()
-            if data.get("success") and data.get("admin"):
-                return data["admin"]
- 
-    return None
- 
 @bot.hybrid_command(name="me", description="Get all available information about your English Speakers account.")
 async def me(ctx: commands.Context):
     await ctx.defer(ephemeral=True)
- 
-    user_name = ctx.author.name.lower()
-    full_user = str(ctx.author).lower()
- 
+
     try:
         speakers = await fetch_speakers()
     except Exception as e:
-        await ctx.followup.send(f"Error fetching speaker records: {e}", ephemeral=True)
+        await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
         return
- 
-    matched = None
+
+    matched = find_speaker_by_discord(speakers, ctx.author)
     account_type = "Speaker"
- 
-    for speaker in speakers:
-        api_username = (speaker.get("discord_username") or "").lower()
-        if api_username and api_username in (user_name, full_user):
-            matched = speaker
-            break
- 
+
+    # Not a speaker -> check whether this Discord account belongs to an admin
     if not matched:
         try:
             admin = await find_admin_by_discord(ctx.author)
         except Exception as e:
             print(f"[me] admin lookup failed: {e}")
             admin = None
- 
+
         if admin:
             matched = admin
             account_type = "Admin"
- 
+
     if not matched:
-        await ctx.followup.send(
+        await ctx.send(
             "No account is linked to your Discord username.",
             ephemeral=True,
         )
         return
- 
+
     full_name = (
         matched.get("full_name")
         or " ".join(filter(None, [matched.get("first_name"), matched.get("last_name")]))
@@ -838,7 +866,7 @@ async def me(ctx: commands.Context):
         or ctx.author.display_name
     )
     points = matched.get("points")
- 
+
     embed = discord.Embed(
         title=f"Account Information for {full_name}",
         color=discord.Color.blue(),
@@ -872,8 +900,8 @@ async def me(ctx: commands.Context):
         value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
         inline=False,
     )
- 
-    await ctx.followup.send(embed=embed, ephemeral=True)
+
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="details", description="Get details about points.")
 async def details(ctx: commands.Context):
@@ -896,7 +924,7 @@ async def details(ctx: commands.Context):
     embed.add_field(name="Points per Session", value=str(pts_per_session), inline=True)
     embed.set_footer(text="English Speakers Association")
 
-    await ctx.followup.send(embed=embed, ephemeral=True)
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="rgpd", description="Get information about your data privacy and rights under GDPR.")
 async def rgpd(ctx: commands.Context):
@@ -908,13 +936,45 @@ async def rgpd(ctx: commands.Context):
             "We respect your privacy and comply with the General Data Protection Regulation (GDPR). "
             "You have the right to access, rectify, or request the deletion of your personal data. "
             "Some data is necessary for account management and cannot be deleted if it affects your account functionality, except if you wish to delete your account entirely, meaning any points, attendance, and achievements will be permanently removed.\n"
-            "For more information, please visit our [Privacy Policy](https://hainu.fr/englishspeakers/legal/privacy.php) and [Terms of Service](https://hainu.fr/englishspeakers/legal/tos.php)."
+            "For more information, please visit our [Privacy Policy](https://hainu.fr/englishspeakers/legal/privacy.php) and [Terms of Service](https://hainu.fr/englishspeakers/legal/tos.php). "
             "If you wish to see what data we have on you, you can use the `/me` command to view your account information."
         ),
         color=discord.Color.blue(),
     )
 
-    await ctx.followup.send(embed=embed, ephemeral=True)
+    await ctx.send(embed=embed, ephemeral=True)
+
+# ---------- Error Handlers (prevent "thinking..." forever) ----------
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CommandNotFound):
+        return
+
+    original = getattr(error, "original", error)
+    print(f"[command error] /{getattr(ctx.command, 'name', '?')}: {original!r}")
+
+    try:
+        await ctx.send(
+            "Something went wrong while running this command. Please try again later.",
+            ephemeral=True,
+        )
+    except Exception as send_error:
+        print(f"[command error] could not notify user: {send_error!r}")
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = getattr(error, "original", error)
+    print(f"[app command error] {original!r}")
+
+    message = "Something went wrong while running this command. Please try again later."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception as send_error:
+        print(f"[app command error] could not notify user: {send_error!r}")
 
 # ---------- Endpoints ----------
 
