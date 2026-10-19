@@ -586,69 +586,108 @@ async def events(ctx: commands.Context):
     embed.set_footer(text="English Speakers Association")
     await ctx.send(embed=embed, ephemeral=True)
 
+async def find_admin_by_discord(author) -> Optional[dict]:
+    """Look up an admin account by Discord username.
+    Returns the admin dict, or None if there is no match."""
+    candidates = []
+    for name in (author.name, str(author)):
+        if name and name not in candidates:
+            candidates.append(name)
+ 
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+        for candidate in candidates:
+            response = None
+            for attempt in range(2):
+                headers = await auth_headers(force_refresh=(attempt == 1))
+                response = await client.get(
+                    API_URL,
+                    params={"resource": "admins", "discord_username": candidate},
+                    headers=headers,
+                )
+                if response.status_code != 401:
+                    break
+ 
+            if response.status_code == 404:
+                continue  # not an admin under this name, try the next one
+ 
+            response.raise_for_status()
+            data = response.json()
+            if data.get("success") and data.get("admin"):
+                return data["admin"]
+ 
+    return None
+ 
+ 
 @bot.hybrid_command(name="me", description="Get all available information about your English Speakers account.")
 async def me(ctx: commands.Context):
     await ctx.defer(ephemeral=True)
-
+ 
     user_name = ctx.author.name.lower()
     full_user = str(ctx.author).lower()
-
+ 
     try:
         speakers = await fetch_speakers()
     except Exception as e:
         await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
         return
-
-    matched_speaker = None
+ 
+    matched = None
+    account_type = "Speaker"
+ 
     for speaker in speakers:
         api_username = (speaker.get("discord_username") or "").lower()
         if api_username and api_username in (user_name, full_user):
-            matched_speaker = speaker
+            matched = speaker
             break
-
-    if not matched_speaker:
-        # Try ot fetch an admin account if the user is an admin
-        # Uses the ?resource=admins&id= endpoint to check if the user is an admin
+ 
+    # Not a speaker -> check whether this Discord account belongs to an admin
+    if not matched:
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-                headers = await auth_headers()
-                response = await client.get(
-                    API_URL,
-                    params={"resource": "admins", "id": ctx.author.id},
-                    headers=headers,
-                )
-                response.raise_for_status()
-                data = response.json()
-                if data.get("success") and data.get("admin"):
-                    matched_speaker = data["admin"]
-        except Exception:
-            pass  # Ignore errors and continue
-
+            admin = await find_admin_by_discord(ctx.author)
+        except Exception as e:
+            print(f"[me] admin lookup failed: {e}")
+            admin = None
+ 
+        if admin:
+            matched = admin
+            account_type = "Admin"
+ 
+    if not matched:
         await ctx.send(
-                    "No speaker account is linked to your Discord account.",
-                    ephemeral=True
-                )
+            "No account is linked to your Discord username.",
+            ephemeral=True,
+        )
         return
-
+ 
+    full_name = (
+        matched.get("full_name")
+        or " ".join(filter(None, [matched.get("first_name"), matched.get("last_name")]))
+        or matched.get("username")
+        or ctx.author.display_name
+    )
+    points = matched.get("points")
+ 
     embed = discord.Embed(
-        title=f"Account Information for {matched_speaker.get('full_name', ctx.author.display_name)}",
+        title=f"Account Information for {full_name}",
         color=discord.Color.blue(),
     )
-    embed.add_field(name="Member ID", value=str(matched_speaker.get("id") or matched_speaker.get("member_id")), inline=True)
-    embed.add_field(name="First Name", value=matched_speaker.get("first_name", "N/A"), inline=True)
-    embed.add_field(name="Last Name", value=matched_speaker.get("last_name", "N/A"), inline=True)
-    embed.add_field(name="Full Name", value=matched_speaker.get("full_name") or "N/A", inline=True)
-    embed.add_field(name="Unique Name", value=matched_speaker.get("unique_name") or "N/A", inline=True)
-    embed.add_field(name="Class", value=matched_speaker.get("class") or "N/A", inline=True)
-    embed.add_field(name="Points", value=str(matched_speaker.get("points", 0)), inline=True)
-    embed.add_field(name="Discord Username", value=matched_speaker.get("discord_username") or "Not Linked", inline=True)
+    embed.add_field(name="Account Type", value=account_type, inline=True)
+    embed.add_field(name="Member ID", value=str(matched.get("id") or matched.get("member_id")), inline=True)
+    embed.add_field(name="First Name", value=matched.get("first_name") or "N/A", inline=True)
+    embed.add_field(name="Last Name", value=matched.get("last_name") or "N/A", inline=True)
+    embed.add_field(name="Full Name", value=full_name, inline=True)
+    embed.add_field(name="Unique Name", value=matched.get("unique_name") or matched.get("username") or "N/A", inline=True)
+    embed.add_field(name="Class", value=matched.get("class") or "N/A", inline=True)
+    embed.add_field(name="Points", value=str(points) if points is not None else "N/A", inline=True)
+    embed.add_field(name="Discord Username", value=matched.get("discord_username") or "Not Linked", inline=True)
     embed.add_field(
         name="Login to the website",
         value="[Click here to log in](http://hainu.fr/englishspeakers/student/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
         inline=False,
     )
-
-    await ctx.send(embed=embed, ephemeral=True)    
+ 
+    await ctx.send(embed=embed, ephemeral=True)
+  
 
 @bot.hybrid_command(name="rgpd", description="Get information about your data privacy and rights under GDPR.")
 async def rgpd(ctx: commands.Context):
