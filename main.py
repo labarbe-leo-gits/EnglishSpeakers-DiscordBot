@@ -210,6 +210,32 @@ async def fetch_speakers() -> list:
 
     return response.json().get("speakers", [])
 
+async def fetch_variable(client: httpx.AsyncClient, name: str):
+    """Returns the value of a variable from the API's variables route.
+    The API answers {"success": true, "variable": {"variable_name": ..., "variable_value": ...}}."""
+    response = None
+    for attempt in range(2):
+        headers = await auth_headers(force_refresh=(attempt == 1))
+        response = await client.get(
+            API_URL,
+            params={"resource": "variables", "name": name},
+            headers=headers,
+        )
+        if response.status_code != 401:
+            break
+    response.raise_for_status()
+    variable = response.json().get("variable") or {}
+    return variable.get("variable_value")
+
+def to_number(value, default):
+    """The API returns numbers as strings (e.g. "10.50"). Returns an int when the
+    value is whole (9.0 -> 9), otherwise a float, or `default` if it isn't a number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return int(number) if number == int(number) else number
+
 async def resolve_channel(channel_id: str):
     if not channel_id.isdigit():
         raise HTTPException(status_code=400, detail="Channel ID must be numeric.")
@@ -784,36 +810,21 @@ async def me(ctx: commands.Context):
     embed.add_field(name="Unique Name", value=matched.get("unique_name") or matched.get("username") or "N/A", inline=True)
     embed.add_field(name="Class", value=matched.get("class") or "N/A", inline=True)
 
+    max_points = 9
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            response = None
-            for attempt in range(2):
-                headers = await auth_headers(force_refresh=(attempt == 1))
-                response = await client.get(
-                    API_URL,
-                    params={"resource": "variables", "name": "max_points"},
-                    headers=headers,
-                )
-                if response.status_code != 401:
-                    break
-            response.raise_for_status()
-            data = response.json()
-            max_points = data.get("value")
-    except Exception:
-        max_points = 9
+            max_points = to_number(await fetch_variable(client, "max_points"), 9)
+    except Exception as e:
+        print(f"[me] max_points lookup failed: {e}")
 
-    if account_type == "Speaker":
-        if points is not None:
-            display_points = f"{min(points, max_points)} / {max_points}"
-        else:
-            display_points = "N/A"
+    points_number = to_number(points, None)
+    if points_number is None:
+        display_points = "N/A"
     else:
-        if points is not None:
-            display_points = f"{min(points, max_points + 3)} / {max_points + 3}"
-        else:
-            display_points = "N/A"
+        cap = max_points + 3 if account_type == "Admin" else max_points
+        display_points = f"{min(points_number, cap)} / {cap}"
 
-    embed.add_field(name="Points", value=str(display_points) if points is not None else "N/A", inline=True)
+    embed.add_field(name="Points", value=display_points, inline=True)
     embed.add_field(name="Discord Username", value=matched.get("discord_username") or "Not Linked", inline=True)
     embed.add_field(
         name="Login to the website",
@@ -827,39 +838,14 @@ async def me(ctx: commands.Context):
 async def details(ctx: commands.Context):
     await ctx.defer(ephemeral=True)
 
+    max_points = 9
+    pts_per_session = 1
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            response = None
-            for attempt in range(2):
-                headers = await auth_headers(force_refresh=(attempt == 1))
-                response = await client.get(
-                    API_URL,
-                    params={"resource": "variables", "name": "max_points"},
-                    headers=headers,
-                )
-                if response.status_code != 401:
-                    break
-            response.raise_for_status()
-            data = response.json()
-            max_points = data.get("value")
-
-            # Fetch points per session
-            response_pts = None
-            for attempt in range(2):
-                headers = await auth_headers(force_refresh=(attempt == 1))
-                response_pts = await client.get(
-                    API_URL,
-                    params={"resource": "variables", "name": "pts_per_session"},
-                    headers=headers,
-                )
-                if response_pts.status_code != 401:
-                    break
-            response_pts.raise_for_status()
-            data_pts = response_pts.json()
-            pts_per_session = data_pts.get("value")
-    except Exception:
-        max_points = 9
-        pts_per_session = 1
+            max_points = to_number(await fetch_variable(client, "max_points"), 9)
+            pts_per_session = to_number(await fetch_variable(client, "pts_per_session"), 1)
+    except Exception as e:
+        print(f"[details] variable lookup failed: {e}")
 
     embed = discord.Embed(
         title="Points Details",
