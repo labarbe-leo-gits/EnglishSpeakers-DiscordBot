@@ -550,7 +550,27 @@ async def points(ctx: commands.Context):
     matched_speaker = find_speaker_by_discord(speakers, ctx.author)
 
     if not matched_speaker:
-        await ctx.send("No speaker account is linked to your Discord username.", ephemeral=True)
+        # Try checking for an admin account linked to this Discord user
+        try:
+            admin = await find_admin_by_discord(ctx.author)
+        except Exception as e:
+            print(f"[points] admin lookup failed: {e}")
+            admin = None
+
+        if admin:
+            points_value = admin.get("points", "N/A")
+            embed = discord.Embed(title="Your Points Balance", color=discord.Color.blue())
+            embed.add_field(name="First Name", value=admin.get("first_name") or "N/A", inline=True)
+            embed.add_field(name="Last Name", value=admin.get("last_name") or "N/A", inline=True)
+            embed.add_field(name="Class", value=admin.get("class") or "N/A", inline=True)
+            embed.add_field(name="Points", value=str(points_value), inline=False)
+            embed.add_field(
+                name="Login to the website",
+                value="[Click here to log in](http://hainu.fr/englishspeakers/public/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
+                inline=False,
+            )
+            await ctx.send(embed=embed, ephemeral=True)
+        
         return
 
     points_value = matched_speaker.get("points", "N/A")
@@ -741,8 +761,16 @@ async def attendance(ctx: commands.Context):
     speaker = data["speaker"]
     attendance_list = speaker.get("attendance") or []
 
+    admin = await find_admin_by_discord(ctx.author)
+    full_name = (
+        admin.get("full_name")
+        or " ".join(filter(None, [admin.get("first_name"), admin.get("last_name")]))
+            or admin.get("username")
+            or ctx.author.display_name
+        )
+
     embed = discord.Embed(
-        title=f"Attendance for {speaker.get('full_name') or ctx.author.display_name}",
+        title=f"Attendance for {full_name}",
         color=discord.Color.blue(),
     )
     embed.add_field(name="Class", value=speaker.get("class") or "N/A", inline=True)
