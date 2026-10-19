@@ -142,27 +142,46 @@ async def api_login():
 
 _token: Optional[str] = None
 
-async def login_speaker_student_portal(unique_name: str, password: str) -> bool:
-    if not unique_name or not password:
-        raise HTTPException(status_code=400, detail="Credentials required.")
-
+async def api_validate_credentials(payload: dict) -> dict:
+    """POSTs a login payload to the API and returns the JSON response
+    ({"token": ..., "user_type": ..., "user": {...}}) if the credentials are valid."""
     headers = insert_api_key_into_headers({})
     async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
         response = await client.post(
             API_URL,
             params={"resource": "login"},
-            json={"unique_name": unique_name, "password": password},
+            json=payload,
             headers=headers,
         )
 
+    if response.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="API login error.")
 
-    token = response.json().get("token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Invalid unique_name or password.")
+    data = response.json()
+    if not data.get("token"):
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
 
+    return data
+
+async def login_speaker_student_portal(unique_name: str, password: str) -> bool:
+    if not unique_name or not password:
+        raise HTTPException(status_code=400, detail="Credentials required.")
+
+    await api_validate_credentials({"unique_name": unique_name, "password": password})
     return True
+
+async def login_admin_portal(email: str, password: str) -> dict:
+    """Secondary login used by the admin /pdf form (email + password)."""
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Credentials required.")
+
+    # For now this is the same request as the standard (unique_name) login,
+    # but with the email instead. user_type="admin" restricts it to ADMINS accounts.
+    return await api_validate_credentials(
+        {"email": email, "password": password, "user_type": "admin"}
+    )
 
 async def get_token(force_refresh: bool = False) -> str:
     global _token
@@ -209,46 +228,70 @@ async def resolve_channel(channel_id: str):
         raise HTTPException(status_code=400, detail="Channel cannot receive messages.")
     return channel
 
+async def render_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
+    """Shared export request: POSTs member_id / unique_name / password to the
+    export page and prints the result to PDF. Values are passed to the browser
+    as arguments (not pasted into the JS), so quotes in a password can't break it."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+
+            export_url = "https://hainu.fr/englishspeakers/public/export_member_pdf.php"
+            await page.goto(export_url)
+
+            await page.evaluate(
+                """([action, fields]) => {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = action;
+
+                    for (const [key, value] of Object.entries(fields)) {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = key;
+                        input.value = value;
+                        form.appendChild(input);
+                    }
+
+                    document.body.appendChild(form);
+                    form.submit();
+                }""",
+                [export_url, {
+                    "member_id": member_id,
+                    "unique_name": unique_name,
+                    "password": password,
+                }],
+            )
+
+            await page.wait_for_load_state("networkidle")
+            return await page.pdf(format="A4", print_background=True)
+        finally:
+            await browser.close()
+
 async def generate_member_pdf(member_id: str, unique_name: str, password: str) -> bytes:
     credentials_valid = await login_speaker_student_portal(unique_name, password)
     if not credentials_valid:
         raise HTTPException(status_code=401, detail="Invalid credentials.")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page = await context.new_page()
+    return await render_member_pdf(member_id, unique_name, password)
 
-        export_url = "https://hainu.fr/englishspeakers/public/export_member_pdf.php"
-        await page.goto(export_url)
+async def generate_admin_member_pdf(
+    member_id: str, admin_unique_name: str, email: str, password: str
+) -> bytes:
+    login = await login_admin_portal(email, password)
 
-        await page.evaluate(f"""
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '{export_url}';
-            
-            const fields = {{
-                'member_id': '{member_id}',
-                'unique_name': '{unique_name}',
-                'password': '{password}'
-            }};
-            
-            for (const [key, value] of Object.entries(fields)) {{
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = key;
-                input.value = value;
-                form.appendChild(input);
-            }}
-            
-            document.body.appendChild(form);
-            form.submit();
-        """)
+    # The credentials must belong to the admin account linked to this Discord user
+    if str(login.get("user", {}).get("id")) != str(member_id):
+        raise HTTPException(
+            status_code=401,
+            detail="These credentials don't match your linked admin account.",
+        )
 
-        await page.wait_for_load_state("networkidle")
-        pdf_bytes = await page.pdf(format="A4", print_background=True)
-        await browser.close()
-        return pdf_bytes
+    # TODO: for now this copies the standard export request as-is.
+    # The admin's unique_name (or email as a fallback) goes in the unique_name field.
+    return await render_member_pdf(member_id, admin_unique_name or email, password)
 
 # ---------- Modals ----------
 
@@ -282,6 +325,51 @@ class PDFAuthModal(discord.ui.Modal, title="Export Member PDF"):
             file = discord.File(
                 fp=io.BytesIO(pdf_bytes),
                 filename=f"member_report_{self.member_id}.pdf"
+            )
+
+            await interaction.followup.send(
+                content="Here is your exported PDF report:",
+                file=file,
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                content=f"Error generating PDF. Please check your credentials and try again.\nDetails: {str(e)}",
+                ephemeral=True
+            )
+
+class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
+    email = discord.ui.TextInput(
+        label="Email",
+        placeholder="Enter your admin email...",
+        required=True
+    )
+    password = discord.ui.TextInput(
+        label="Password",
+        style=discord.TextStyle.short,
+        placeholder="Enter your password...",
+        required=True
+    )
+
+    def __init__(self, member_id: str, admin_unique_name: str = ""):
+        super().__init__()
+        self.member_id = member_id
+        self.admin_unique_name = admin_unique_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            pdf_bytes = await generate_admin_member_pdf(
+                member_id=self.member_id,
+                admin_unique_name=self.admin_unique_name,
+                email=self.email.value.strip(),
+                password=self.password.value
+            )
+
+            file = discord.File(
+                fp=io.BytesIO(pdf_bytes),
+                filename=f"admin_report_{self.member_id}.pdf"
             )
 
             await interaction.followup.send(
@@ -375,6 +463,7 @@ async def help_command(ctx: commands.Context):
     embed.add_field(name="`/points`", value="Check your points balance linked to your Discord username.", inline=False)
     embed.add_field(name="`/info`", value="View all official web pages, student portals, and community links.", inline=False)
     embed.add_field(name="`/pdf`", value="Generates and exports your member report as a PDF document.", inline=False)
+    embed.add_field(name="`/details`", value="Get details about maximum points and points per session.", inline=False)
     embed.add_field(name="`/attendance`", value="Check your attendance linked to your Discord username.", inline=False)
     embed.add_field(name="`/events`", value="Display the upcoming events from the website's event calendar.", inline=False)
     embed.add_field(name="`/me`", value="Get all available information about your English Speakers account.", inline=False)
@@ -401,15 +490,31 @@ async def pdf_command(interaction: discord.Interaction):
             matched_speaker = speaker
             break
 
-    if not matched_speaker:
-        await interaction.response.send_message(
-            "No speaker account is linked to your Discord account.",
-            ephemeral=True
+    if matched_speaker:
+        speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
+        await interaction.response.send_modal(PDFAuthModal(member_id=speaker_id))
+        return
+
+    # Not a speaker -> check whether this Discord account belongs to an admin
+    try:
+        admin = await find_admin_by_discord(interaction.user)
+    except Exception as e:
+        print(f"[pdf] admin lookup failed: {e}")
+        admin = None
+
+    if admin:
+        await interaction.response.send_modal(
+            AdminPDFAuthModal(
+                member_id=str(admin.get("id")),
+                admin_unique_name=admin.get("unique_name") or "",
+            )
         )
         return
 
-    speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
-    await interaction.response.send_modal(PDFAuthModal(member_id=speaker_id))
+    await interaction.response.send_message(
+        "No account is linked to your Discord account.",
+        ephemeral=True
+    )
 
 @bot.hybrid_command(name="attendance", description="Check your attendance record.")
 async def attendance(ctx: commands.Context):
@@ -678,7 +783,37 @@ async def me(ctx: commands.Context):
     embed.add_field(name="Full Name", value=full_name, inline=True)
     embed.add_field(name="Unique Name", value=matched.get("unique_name") or matched.get("username") or "N/A", inline=True)
     embed.add_field(name="Class", value=matched.get("class") or "N/A", inline=True)
-    embed.add_field(name="Points", value=str(points) if points is not None else "N/A", inline=True)
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = None
+            for attempt in range(2):
+                headers = await auth_headers(force_refresh=(attempt == 1))
+                response = await client.get(
+                    API_URL,
+                    params={"resource": "variables", "name": "max_points"},
+                    headers=headers,
+                )
+                if response.status_code != 401:
+                    break
+            response.raise_for_status()
+            data = response.json()
+            max_points = data.get("value")
+    except Exception:
+        max_points = 9
+
+    if account_type == "Speaker":
+        if points is not None:
+            display_points = f"{min(points, max_points)} / {max_points}"
+        else:
+            display_points = "N/A"
+    else:
+        if points is not None:
+            display_points = f"{min(points, max_points + 3)} / {max_points + 3}"
+        else:
+            display_points = "N/A"
+
+    embed.add_field(name="Points", value=str(display_points) if points is not None else "N/A", inline=True)
     embed.add_field(name="Discord Username", value=matched.get("discord_username") or "Not Linked", inline=True)
     embed.add_field(
         name="Login to the website",
@@ -687,7 +822,54 @@ async def me(ctx: commands.Context):
     )
  
     await ctx.send(embed=embed, ephemeral=True)
-  
+
+@bot.hybrid_command(name="details", description="Get details about points.")
+async def details(ctx: commands.Context):
+    await ctx.defer(ephemeral=True)
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            response = None
+            for attempt in range(2):
+                headers = await auth_headers(force_refresh=(attempt == 1))
+                response = await client.get(
+                    API_URL,
+                    params={"resource": "variables", "name": "max_points"},
+                    headers=headers,
+                )
+                if response.status_code != 401:
+                    break
+            response.raise_for_status()
+            data = response.json()
+            max_points = data.get("value")
+
+            # Fetch points per session
+            response_pts = None
+            for attempt in range(2):
+                headers = await auth_headers(force_refresh=(attempt == 1))
+                response_pts = await client.get(
+                    API_URL,
+                    params={"resource": "variables", "name": "pts_per_session"},
+                    headers=headers,
+                )
+                if response_pts.status_code != 401:
+                    break
+            response_pts.raise_for_status()
+            data_pts = response_pts.json()
+            pts_per_session = data_pts.get("value")
+    except Exception:
+        max_points = 9
+        pts_per_session = 1
+
+    embed = discord.Embed(
+        title="Points Details",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Maximum Points", value=str(max_points), inline=True)
+    embed.add_field(name="Points per Session", value=str(pts_per_session), inline=True)
+    embed.set_footer(text="English Speakers Association")
+
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.hybrid_command(name="rgpd", description="Get information about your data privacy and rights under GDPR.")
 async def rgpd(ctx: commands.Context):
