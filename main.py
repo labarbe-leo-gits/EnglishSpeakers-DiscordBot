@@ -283,6 +283,56 @@ def find_speaker_by_discord(speakers: list, author) -> Optional[dict]:
             return speaker
     return None
 
+async def change_speaker_password(old_password: str, new_password: str, speaker_id: str) -> bool:
+    """Changes a speaker's password via the API. Returns True if successful."""
+    if not old_password or not new_password or not speaker_id:
+        raise HTTPException(status_code=400, detail="Missing required parameters.")
+
+    # Get the speaker's unique_name from the API
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+        headers = await auth_headers()
+        response = await client.get(
+            API_URL,
+            params={"resource": "speakers", "id": speaker_id},
+            headers=headers,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to fetch speaker data.")
+        speaker_data = response.json().get("speaker")
+        if not speaker_data:
+            raise HTTPException(status_code=404, detail="Speaker not found.")
+        unique_name = speaker_data.get("unique_name")
+        if not unique_name:
+            raise HTTPException(status_code=500, detail="Speaker unique name missing.")
+
+    # Try logging in with the old password to verify it
+    try:
+        await api_validate_credentials({"unique_name": unique_name, "password": old_password})
+    except HTTPException as e:
+        if e.status_code == 401:
+            raise HTTPException(status_code=401, detail="Old password is incorrect.")
+        else:
+            raise
+
+    # Change the password via the API using PATCH ?resource=speakers&id=speaker_id
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
+        headers = await auth_headers()
+        response = await client.patch(
+            API_URL,
+            params={"resource": "speakers", "id": speaker_id},
+            json={"password": new_password},
+            headers=headers,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to change password.")
+        data = response.json()
+        if not data.get("success"):
+            raise HTTPException(status_code=500, detail="Password change unsuccessful.")
+
+    # If we reach here, the password change was successful, return True
+    return True
+        
+
 def format_date(value) -> str:
     """Converts YYYY-MM-DD to DD/MM/YYYY. Never raises."""
     if not isinstance(value, str) or not value:
@@ -537,6 +587,47 @@ class AdminPDFAuthModal(discord.ui.Modal, title="Export Admin PDF"):
                 attachments=[]
             )
 
+class ChangePasswordModal(discord.ui.Modal, title="Change Account Password"):
+    old_password = discord.ui.TextInput(
+        label="Old Password",
+        style=discord.TextStyle.short,
+        placeholder="Enter your current password...",
+        required=True
+    )
+    new_password = discord.ui.TextInput(
+        label="New Password",
+        style=discord.TextStyle.short,
+        placeholder="Enter your new password...",
+        required=True
+    )
+
+    def __init__(self, member_id: str):
+        super().__init__()
+        self.member_id = member_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            success = await change_speaker_password(
+                old_password=self.old_password.value,
+                new_password=self.new_password.value,
+                speaker_id=self.member_id
+            )
+            if success:
+                await interaction.response.send_message(
+                    "Your password has been changed successfully.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "Failed to change password. Please check your credentials and try again.",
+                    ephemeral=True
+                )
+        except HTTPException as e:
+            await interaction.response.send_message(
+                f"Error: {e.detail}",
+                ephemeral=True
+            )
+
 # ---------- Bot Commands ----------
 
 @bot.hybrid_command(
@@ -593,6 +684,27 @@ async def points(ctx: commands.Context):
     )
 
     await ctx.send(embed=embed, ephemeral=True)
+
+@bot.hybrid_command(name="change_password", description="Change your English Speakers account password.")
+async def change_password(ctx: commands.Context):
+    await ctx.defer(ephemeral=True)
+
+    try:
+        speakers = await fetch_speakers()
+    except Exception as e:
+        await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
+        return
+
+    matched_speaker = find_speaker_by_discord(speakers, ctx.author)
+
+    if not matched_speaker:
+        await ctx.send("No account is linked to your Discord username.", ephemeral=True)
+        return
+
+    speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
+    modal = ChangePasswordModal(member_id=speaker_id)
+    await ctx.send_modal(modal)
+
 
 @bot.hybrid_command(name="info", description="Get helpful links and portal resources.")
 async def info(ctx: commands.Context):
@@ -721,11 +833,30 @@ async def attendance(ctx: commands.Context):
             title=f"Attendance for {admin.get('full_name') or ctx.author.display_name}",
             color=discord.Color.blue(),
         )
+
+        # Only show the 5 latest attendance records to avoid huge embeds. If there are more than 5, show a note about it.
+        if len(attendance_list) > 5:
+            embed.add_field(
+                name="Note",
+                value=f"Showing the 5 most recent attendance records out of {len(attendance_list)} total.",
+                inline=False,
+            )
+            attendance_list = sorted(attendance_list, key=lambda x: x.get("session_date", ""), reverse=True)[:5]
+
         embed.add_field(
             name=f"Attendance ({len(attendance_list)})",
             value=build_attendance_value(attendance_list),
             inline=False,
         )
+
+        # Footer note if more than 5 to tell to login to the website for full history
+        if len(attendance_list) > 5:
+            embed.add_field(
+                name="Full History",
+                value="[Log in to the website](http://hainu.fr/englishspeakers/student/login.php) to view your complete attendance history.",
+                inline=False,
+            )
+
         embed.set_footer(text="English Speakers Association")
 
         # This send was missing: without it the deferred response never completes.
