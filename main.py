@@ -698,7 +698,25 @@ async def change_password(ctx: commands.Context):
     matched_speaker = find_speaker_by_discord(speakers, ctx.author)
 
     if not matched_speaker:
-        await ctx.send("No account is linked to your Discord username.", ephemeral=True)
+        # Check if this Discord account belongs to an admin
+        try:
+            admin = await find_admin_by_discord(ctx.author)
+        except Exception as e:
+            print(f"[change_password] admin lookup failed: {e}")
+            admin = None
+
+        if admin:
+            await ctx.send(
+                "Admin accounts cannot change their password through this bot. Please use the website to manage your admin account.",
+                ephemeral=True
+            )
+
+        else:
+            await ctx.send(
+                "No account is linked to your Discord username. Please ensure your Discord username is linked to your English Speakers account.",
+                ephemeral=True
+            )
+
         return
 
     speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
@@ -834,8 +852,8 @@ async def attendance(ctx: commands.Context):
             color=discord.Color.blue(),
         )
 
-        # Only show the 5 latest attendance records to avoid huge embeds. If there are more than 5, show a note about it.
         if len(attendance_list) > 5:
+            isMoreThanFive = True
             embed.add_field(
                 name="Note",
                 value=f"Showing the 5 most recent attendance records out of {len(attendance_list)} total.",
@@ -849,8 +867,7 @@ async def attendance(ctx: commands.Context):
             inline=False,
         )
 
-        # Footer note if more than 5 to tell to login to the website for full history
-        if len(attendance_list) > 5:
+        if isMoreThanFive:
             embed.add_field(
                 name="Full History",
                 value="[Log in to the website](http://hainu.fr/englishspeakers/student/login.php) to view your complete attendance history.",
