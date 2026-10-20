@@ -685,43 +685,32 @@ async def points(ctx: commands.Context):
 
     await ctx.send(embed=embed, ephemeral=True)
 
-@bot.hybrid_command(name="change_password", description="Change your English Speakers account password.")
-async def change_password(ctx: commands.Context):
-    await ctx.defer(ephemeral=True)
-
+@bot.tree.command(name="change_password", description="Change your English Speakers account password.")
+async def change_password(interaction: discord.Interaction):
     try:
         speakers = await fetch_speakers()
     except Exception as e:
-        await ctx.send(f"Error fetching speaker records: {e}", ephemeral=True)
+        await interaction.response.send_message(f"Error fetching speaker records: {e}", ephemeral=True)
         return
 
-    matched_speaker = find_speaker_by_discord(speakers, ctx.author)
+    matched_speaker = find_speaker_by_discord(speakers, interaction.user)
 
     if not matched_speaker:
-        # Check if this Discord account belongs to an admin
         try:
-            admin = await find_admin_by_discord(ctx.author)
+            admin = await find_admin_by_discord(interaction.user)
         except Exception as e:
             print(f"[change_password] admin lookup failed: {e}")
             admin = None
 
         if admin:
-            await ctx.send(
-                "Admin accounts cannot change their password through this bot. Please use the website to manage your admin account.",
-                ephemeral=True
-            )
-
+            msg = "Admin accounts cannot change their password through this bot. Please use the website to manage your admin account."
         else:
-            await ctx.send(
-                "No account is linked to your Discord username. Please ensure your Discord username is linked to your English Speakers account.",
-                ephemeral=True
-            )
-
+            msg = "No account is linked to your Discord username. Please ensure your Discord username is linked to your English Speakers account."
+        await interaction.response.send_message(msg, ephemeral=True)
         return
 
     speaker_id = str(matched_speaker.get("id") or matched_speaker.get("member_id"))
-    modal = ChangePasswordModal(member_id=speaker_id)
-    await ctx.send_modal(modal)
+    await interaction.response.send_modal(ChangePasswordModal(member_id=speaker_id))
 
 
 @bot.hybrid_command(name="info", description="Get helpful links and portal resources.")
