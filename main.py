@@ -656,6 +656,7 @@ async def points(ctx: commands.Context):
 
         if admin:
             points_value = admin.get("points", "N/A")
+            points_value = points_value + 3 if isinstance(points_value, (int, float)) else points_value  # Admins can have up to 3 extra points
             embed = discord.Embed(title="Your Points Balance", color=discord.Color.blue())
             embed.add_field(name="First Name", value=admin.get("first_name") or "N/A", inline=True)
             embed.add_field(name="Last Name", value=admin.get("last_name") or "N/A", inline=True)
@@ -1062,6 +1063,8 @@ async def me(ctx: commands.Context):
         display_points = "N/A"
     else:
         cap = max_points + 3 if account_type == "Admin" else max_points
+        if account_type == "Admin":
+            points_number = points_number + 3  # Admins can have up to 3 extra points
         display_points = f"{min(points_number, cap)} / {cap}"
 
     embed.add_field(name="Points", value=display_points, inline=True)
