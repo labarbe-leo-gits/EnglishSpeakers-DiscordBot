@@ -670,6 +670,8 @@ async def points(ctx: commands.Context):
 
             max_points_value = max_points_value + 3
 
+            points_value = min(points_value, max_points_value)
+
             embed = discord.Embed(title="Your Points Balance", color=discord.Color.blue())
             embed.add_field(name="First Name", value=admin.get("first_name") or "N/A", inline=True)
             embed.add_field(name="Last Name", value=admin.get("last_name") or "N/A", inline=True)
