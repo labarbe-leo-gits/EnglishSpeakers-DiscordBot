@@ -656,12 +656,25 @@ async def points(ctx: commands.Context):
 
         if admin:
             points_value = admin.get("points", "N/A")
-            points_value = points_value + 3 if isinstance(points_value, (int, float)) else points_value  # Admins can have up to 3 extra points
+            points_value = to_number(points_value, "N/A")
+            points_value = points_value + 3
+
+            # Check the maximum points variable from the API
+            try:
+                async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                    max_points_value = await fetch_variable(client, "max_points")
+                    max_points_value = to_number(max_points_value, "N/A")
+            except Exception as e:
+                print(f"[points] failed to fetch max_points variable: {e}")
+                max_points_value = "N/A"
+
+            max_points_value = max_points_value + 3
+
             embed = discord.Embed(title="Your Points Balance", color=discord.Color.blue())
             embed.add_field(name="First Name", value=admin.get("first_name") or "N/A", inline=True)
             embed.add_field(name="Last Name", value=admin.get("last_name") or "N/A", inline=True)
             embed.add_field(name="Class", value=admin.get("class") or "N/A", inline=True)
-            embed.add_field(name="Points", value=str(points_value), inline=False)
+            embed.add_field(name="Points", value=f"{points_value} / {max_points_value}", inline=False)
             embed.add_field(
                 name="Login to the website",
                 value="[Click here to log in](http://hainu.fr/englishspeakers/public/login.php) to view attendance and achievements! (Alternatively, you can use the `/attendance` command.)",
